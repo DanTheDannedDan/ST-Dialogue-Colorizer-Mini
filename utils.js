@@ -36,12 +36,33 @@ export function loadImage(url) {
  * @returns {Promise<HTMLImageElement>}
  */
 export function waitForImage(img) {
-    return new Promise((resolve, reject) =>
-    {
-        img.addEventListener('load', () => resolve(img), { once: true });
-        img.addEventListener('error', reject, { once: true });
-        if (img.complete)
+    return new Promise((resolve, reject) => {
+        const onLoad = () => {
+            cleanup();
             resolve(img);
+        };
+        const onError = (err) => {
+            cleanup();
+            reject(err instanceof Error ? err : new Error("Image failed to load."));
+        };
+        const cleanup = () => {
+            img.removeEventListener('load', onLoad);
+            img.removeEventListener('error', onError);
+        };
+
+        // Already finished loading? Decide success/failure by naturalWidth: a
+        // "complete" image with zero natural width actually failed to decode.
+        if (img.complete) {
+            if (img.naturalWidth > 0) {
+                resolve(img);
+            } else {
+                reject(new Error("Image is complete but failed to decode (naturalWidth === 0)."));
+            }
+            return;
+        }
+
+        img.addEventListener('load', onLoad, { once: true });
+        img.addEventListener('error', onError, { once: true });
     });
 }
 

@@ -11,6 +11,7 @@ import { extension_settings } from "../../../extensions.js";
 
 //#region Local imports
 
+import { ColorizeSourceType } from "./constants.js";
 import { ExColor } from "./ExColor.js";
 import { CharacterType, STCharacter } from "./STCharacter.js";
 import { getSmartAvatarColor } from "./color-utils.js";
@@ -21,6 +22,7 @@ import {
 } from "./element-creators.js";
 import { initializeSettings } from "./settings-utils.js";
 import {
+  disposeStObservers,
   expEventSource,
   exp_event_type,
   getAllPersonas,
@@ -42,16 +44,8 @@ const DEFAULT_STATIC_DIALOGUE_COLOR_HEX = "#e18a24";
 /** @type {[number, number, number]} */
 const DEFAULT_STATIC_DIALOGUE_COLOR_RGB = [225, 138, 36];
 
-/**
- * @typedef {ValueOf<typeof ColorizeSourceType>} ColorizeSourceType
- * @readonly
- */
-export const ColorizeSourceType = {
-  AVATAR_SMART: "avatar_smart",
-  CHAR_COLOR_OVERRIDE: "char_color_override",
-  STATIC_COLOR: "static_color",
-  DISABLED: "disabled",
-};
+// Re-export for backwards compatibility (older imports referenced this from index.js).
+export { ColorizeSourceType };
 
 /**
  * @typedef {defaultExtSettings} PaletteTalkSettings
@@ -72,7 +66,10 @@ const defaultExtSettings = {
 };
 
 const extName = "SillyTavern-Palette-Talk";
-const extFolderPath = `scripts/extensions/third-party/${extName}`;
+// Derive the on-disk folder path from this module's own URL instead of
+// hard-coding the folder name. This keeps the extension working even if the
+// user cloned/installed it under a different directory name.
+const extFolderPath = new URL(".", import.meta.url).pathname.replace(/\/$/, "");
 const extSettings = initializeSettings(extName, defaultExtSettings);
 
 function debounce(fn, delay = 100) {
@@ -131,6 +128,7 @@ async function getCharStyleString(stChar) {
 async function updateCharactersStyleSheet(characterList) {
   if (!characterList) {
     if (!isInAnyChat()) {
+      charactersStyleSheet.innerHTML = "";
       return;
     }
     if (isInGroupChat()) {
@@ -138,6 +136,14 @@ async function updateCharactersStyleSheet(characterList) {
     } else if (isInCharacterChat()) {
       characterList = [getCurrentCharacter()];
     }
+  }
+
+  // Filter out any nulls (e.g. a character/group member that couldn't be
+  // resolved) so we never call getCharStyleString on undefined.
+  characterList = (characterList ?? []).filter(Boolean);
+  if (characterList.length === 0) {
+    charactersStyleSheet.innerHTML = "";
+    return;
   }
 
   const stylesHtml = await Promise.all(
@@ -153,7 +159,11 @@ async function updateCharactersStyleSheet(characterList) {
  * @param {STCharacter[]=} personaList
  */
 async function updatePersonasStyleSheet(personaList) {
-  personaList ??= getAllPersonas();
+  personaList = (personaList ?? getAllPersonas()).filter(Boolean);
+  if (personaList.length === 0) {
+    personasStyleSheet.innerHTML = "";
+    return;
+  }
 
   const stylesHtml = await Promise.all(
     personaList.map(async (persona) => await getCharStyleString(persona))
@@ -572,6 +582,10 @@ function updateNamesStyleSheet() {
   const colorNames = extSettings.charColorSettings.colorNameText;
 
   const rules = Object.entries(overrides)
+    // Revalidate the hex before injecting it into a <style> tag — the settings
+    // file could be hand-edited/corrupted, and we don't want to emit broken or
+    // unsafe CSS.
+    .map(([name, hex]) => [name, ExColor.isValidHexString(hex) ? ExColor.getHexWithHash(hex) : null])
     .filter(([name, hex]) => name && hex)
     .map(([name, hex]) => {
       const sel = `.mes[sdc-author_name="${cssEscapeAttrValue(name)}"]`;
@@ -587,175 +601,123 @@ function updateNamesStyleSheet() {
   namesStyleSheet.innerHTML = rules.join("");
 }
 
-function initializeSettingsUI() {
+/**
+ * Builds the dialogue-settings controls (color source dropdown, static color
+ * picker, name/vibrancy toggles) for one section (character OR persona).
+ *
+ * Instead of relying on fragile `children[N]` indexing, this anchors inserts to
+ * stable markers in the HTML: the `.sdc_settings_section_head` and the row
+ * tagged `[data-sdc-role="static-color-row"]`.
+ *
+ * @param {object} opts
+ * @param {string} opts.sectionSelector Selector of the section container.
+ * @param {string} opts.idPrefix Prefix for generated element IDs.
+ * @param {object} opts.settings The settings object for this section.
+ * @param {CharacterType} opts.charType Character type (for cache clearing).
+ * @param {() => void} opts.onUpdated Refresh callback.
+ * @param {string} opts.nameLabel Label for the "color names" toggle.
+ */
+function buildDialogueSettingsSection(opts) {
+  const { sectionSelector, idPrefix, settings, charType, onUpdated, nameLabel } =
+    opts;
+
   const elemExtensionSettings = document.getElementById(
     "sdc-extension-settings"
   );
+  const section = elemExtensionSettings.querySelector(sectionSelector);
+  if (!section) {
+    console.warn(`[Palette Talk] Settings section '${sectionSelector}' not found.`);
+    return;
+  }
 
-  // ===== CHARACTER SETTINGS =====
-  const charDialogueSettings = elemExtensionSettings.querySelector(
-    "#sdc-char_dialogue_settings"
-  );
-  const charStaticColorRow = charDialogueSettings.children[1]; // The static color label/container
+  const sectionHead = section.querySelector(".sdc_settings_section_head");
+  const staticColorRow = section.querySelector('[data-sdc-role="static-color-row"]');
+  if (!sectionHead || !staticColorRow) {
+    console.warn(`[Palette Talk] Settings anchors missing in '${sectionSelector}'.`);
+    return;
+  }
 
-  // Color source dropdown
-  const charColorSourceDropdown = createColorSourceDropdown(
-    "sdc-char_colorize_source",
+  // Color source dropdown — inserted right after the section heading.
+  const colorSourceDropdown = createColorSourceDropdown(
+    `${idPrefix}_colorize_source`,
     (changedEvent) => {
       const value = $(changedEvent.target).prop("value");
-      extSettings.charColorSettings.colorizeSource = value;
-
-      // Show/hide static color picker based on selection
-      charStaticColorRow.style.display =
+      settings.colorizeSource = value;
+      staticColorRow.style.display =
         value === ColorizeSourceType.STATIC_COLOR ? "block" : "none";
-
-      onCharacterSettingsUpdated();
+      onUpdated();
     }
   );
-  charDialogueSettings.children[0].insertAdjacentElement(
-    "afterend",
-    charColorSourceDropdown
-  );
+  sectionHead.insertAdjacentElement("afterend", colorSourceDropdown);
 
-  // Static color picker
-  const charStaticColorPickerCombo = createColorTextPickerCombo(
+  // Static color picker — appended inside the static color row.
+  const staticColorPickerCombo = createColorTextPickerCombo(
     (textboxValue) => getTextValidHexOrDefault(textboxValue, null),
     (colorValue) => {
-      extSettings.charColorSettings.staticColor = colorValue;
-      onCharacterSettingsUpdated();
+      settings.staticColor = colorValue;
+      onUpdated();
     }
   );
-  charDialogueSettings.children[2].insertAdjacentElement(
-    "beforeend",
-    charStaticColorPickerCombo
-  );
+  staticColorRow.insertAdjacentElement("beforeend", staticColorPickerCombo);
 
-  // Color name text checkbox
-  const charColorNameCheckbox = createCheckboxWithLabel(
-    "sdc-char_color_name",
-    "Apply color to character names",
-    "When enabled, character names will be colored in addition to dialogue quotes.",
-    extSettings.charColorSettings.colorNameText || false,
+  // Color name text checkbox — after the static color row.
+  const colorNameCheckbox = createCheckboxWithLabel(
+    `${idPrefix}_color_name`,
+    nameLabel,
+    "When enabled, names will be colored in addition to dialogue quotes.",
+    settings.colorNameText || false,
     (checked) => {
-      extSettings.charColorSettings.colorNameText = checked;
-      onCharacterSettingsUpdated();
+      settings.colorNameText = checked;
+      onUpdated();
     }
   );
-  charDialogueSettings.children[2].insertAdjacentElement(
-    "afterend",
-    charColorNameCheckbox
-  );
+  staticColorRow.insertAdjacentElement("afterend", colorNameCheckbox);
 
-  // Vibrancy boost checkbox (insert after color name checkbox to maintain correct order)
-  const charVibrancyCheckbox = createCheckboxWithLabel(
-    "sdc-char_boost_vibrancy",
+  // Vibrancy boost checkbox — after the name checkbox.
+  const vibrancyCheckbox = createCheckboxWithLabel(
+    `${idPrefix}_boost_vibrancy`,
     "Boost color vibrancy",
     "Increases saturation by 35% for more colorful dialogue (Avatar Smart mode only).",
-    extSettings.charColorSettings.boostVibrancy || false,
+    settings.boostVibrancy || false,
     (checked) => {
-      extSettings.charColorSettings.boostVibrancy = checked;
-      clearCacheForCharType(CharacterType.CHARACTER); // Clear character cache
-      onCharacterSettingsUpdated();
+      settings.boostVibrancy = checked;
+      clearCacheForCharType(charType);
+      onUpdated();
     }
   );
-  charColorNameCheckbox.insertAdjacentElement("afterend", charVibrancyCheckbox);
+  colorNameCheckbox.insertAdjacentElement("afterend", vibrancyCheckbox);
 
-  // Initialize values and visibility
-  charStaticColorRow.style.display =
-    extSettings.charColorSettings.colorizeSource ===
-    ColorizeSourceType.STATIC_COLOR
+  // Initialize values and visibility.
+  staticColorRow.style.display =
+    settings.colorizeSource === ColorizeSourceType.STATIC_COLOR
       ? "block"
       : "none";
-  $(charColorSourceDropdown.querySelector("select"))
-    .prop("value", extSettings.charColorSettings.colorizeSource)
+  $(colorSourceDropdown.querySelector("select"))
+    .prop("value", settings.colorizeSource)
     .trigger("change");
-  $(charStaticColorPickerCombo.querySelector('input[type="text"]'))
-    .prop("value", extSettings.charColorSettings.staticColor)
+  $(staticColorPickerCombo.querySelector('input[type="text"]'))
+    .prop("value", settings.staticColor)
     .trigger("focusout");
+}
 
-  // ===== PERSONA SETTINGS =====
-  const personaDialogueSettings = elemExtensionSettings.querySelector(
-    "#sdc-persona_dialogue_settings"
-  );
-  const personaStaticColorRow = personaDialogueSettings.children[1]; // The static color label/container
+function initializeSettingsUI() {
+  buildDialogueSettingsSection({
+    sectionSelector: "#sdc-char_dialogue_settings",
+    idPrefix: "sdc-char",
+    settings: extSettings.charColorSettings,
+    charType: CharacterType.CHARACTER,
+    onUpdated: onCharacterSettingsUpdated,
+    nameLabel: "Apply color to character names",
+  });
 
-  // Color source dropdown
-  const personaColorSourceDropdown = createColorSourceDropdown(
-    "sdc-persona_colorize_source",
-    (changedEvent) => {
-      const value = $(changedEvent.target).prop("value");
-      extSettings.personaColorSettings.colorizeSource = value;
-
-      // Show/hide static color picker based on selection
-      personaStaticColorRow.style.display =
-        value === ColorizeSourceType.STATIC_COLOR ? "block" : "none";
-
-      onPersonaSettingsUpdated();
-    }
-  );
-  personaDialogueSettings.children[0].insertAdjacentElement(
-    "afterend",
-    personaColorSourceDropdown
-  );
-
-  // Static color picker
-  const personaStaticColorPickerCombo = createColorTextPickerCombo(
-    (textboxValue) => getTextValidHexOrDefault(textboxValue, null),
-    (colorValue) => {
-      extSettings.personaColorSettings.staticColor = colorValue;
-      onPersonaSettingsUpdated();
-    }
-  );
-  personaDialogueSettings.children[2].insertAdjacentElement(
-    "beforeend",
-    personaStaticColorPickerCombo
-  );
-
-  // Color name text checkbox
-  const personaColorNameCheckbox = createCheckboxWithLabel(
-    "sdc-persona_color_name",
-    "Apply color to persona names",
-    "When enabled, persona names will be colored in addition to dialogue quotes.",
-    extSettings.personaColorSettings.colorNameText || false,
-    (checked) => {
-      extSettings.personaColorSettings.colorNameText = checked;
-      onPersonaSettingsUpdated();
-    }
-  );
-  personaDialogueSettings.children[2].insertAdjacentElement(
-    "afterend",
-    personaColorNameCheckbox
-  );
-
-  // Vibrancy boost checkbox (insert after color name checkbox to maintain correct order)
-  const personaVibrancyCheckbox = createCheckboxWithLabel(
-    "sdc-persona_boost_vibrancy",
-    "Boost color vibrancy",
-    "Increases saturation by 35% for more colorful dialogue (Avatar Smart mode only).",
-    extSettings.personaColorSettings.boostVibrancy || false,
-    (checked) => {
-      extSettings.personaColorSettings.boostVibrancy = checked;
-      clearCacheForCharType(CharacterType.PERSONA); // Clear persona cache
-      onPersonaSettingsUpdated();
-    }
-  );
-  personaColorNameCheckbox.insertAdjacentElement(
-    "afterend",
-    personaVibrancyCheckbox
-  );
-
-  // Initialize values and visibility
-  personaStaticColorRow.style.display =
-    extSettings.personaColorSettings.colorizeSource ===
-    ColorizeSourceType.STATIC_COLOR
-      ? "block"
-      : "none";
-  $(personaColorSourceDropdown.querySelector("select"))
-    .prop("value", extSettings.personaColorSettings.colorizeSource)
-    .trigger("change");
-  $(personaStaticColorPickerCombo.querySelector('input[type="text"]'))
-    .prop("value", extSettings.personaColorSettings.staticColor)
-    .trigger("focusout");
+  buildDialogueSettingsSection({
+    sectionSelector: "#sdc-persona_dialogue_settings",
+    idPrefix: "sdc-persona",
+    settings: extSettings.personaColorSettings,
+    charType: CharacterType.PERSONA,
+    onUpdated: onPersonaSettingsUpdated,
+    nameLabel: "Apply color to persona names",
+  });
 }
 
 /**
@@ -988,6 +950,7 @@ function initializeCharSpecificUI() {
      */
     function applyColorOverride(colorValue) {
       const stChar = stCharGetter();
+      if (!stChar) return; // No character/persona resolved yet — nothing to apply to.
       const colorSettings = getSettingsForChar(stChar);
 
       if (colorValue && colorValue.length > 0) {
@@ -1184,6 +1147,7 @@ function initializeCharSpecificUI() {
     // Initialize with current value
     setTimeout(() => {
       const stChar = stCharGetter();
+      if (!stChar) return;
       const colorSettings = getSettingsForChar(stChar);
       const savedColor = colorSettings.colorOverrides[stChar.avatarName] || "";
       setUIOverrideValue(savedColor);
@@ -1267,16 +1231,56 @@ function initializeCharSpecificUI() {
   }
 
   // Initial attempt (might only succeed partially depending on which UI panels exist)
-  tryInsertAll();
+  const initial = tryInsertAll();
+  if (initial.charOk && initial.personaOk) {
+    return () => {}; // Nothing left to observe; no cleanup needed.
+  }
 
   // Watch for the Persona Management and/or Character Editor DOM being created.
+  //
+  // IMPORTANT: we deliberately do NOT observe `document.body` with
+  // `subtree: true` forever. That fired on every DOM mutation (including every
+  // token during message streaming) and was a major source of lag. Instead we
+  // scope the observer to the settings/drawer containers where these panels
+  // actually appear, debounce it, and hard-stop after a timeout so it can never
+  // run for the lifetime of the page.
+  const scopedContainers = [
+    document.getElementById("right-nav-panel"),
+    document.getElementById("persona-management-block"),
+    document.getElementById("PersonaManagement"),
+    document.getElementById("user-settings-block"),
+  ].filter((el) => el instanceof HTMLElement);
+
+  // Fallback: if none of the known containers exist yet, watch body but only
+  // for direct children being added (childList without subtree is cheap) and
+  // stop as soon as we can scope properly or after the timeout.
   const injectionObserver = new MutationObserver(
     debounce(() => {
       const { charOk, personaOk } = tryInsertAll();
-      if (charOk && personaOk) injectionObserver.disconnect();
-    }, 200)
+      if (charOk && personaOk) {
+        injectionObserver.disconnect();
+        clearTimeout(stopTimer);
+      }
+    }, 250)
   );
-  injectionObserver.observe(document.body, { childList: true, subtree: true });
+
+  if (scopedContainers.length > 0) {
+    for (const container of scopedContainers) {
+      injectionObserver.observe(container, { childList: true, subtree: true });
+    }
+  } else {
+    // Cheap, shallow watch — no subtree — just until the drawers get created.
+    injectionObserver.observe(document.body, { childList: true });
+  }
+
+  // Safety net: never let this observer live forever. The override UIs are
+  // purely cosmetic, so giving up after a while is fine.
+  const stopTimer = setTimeout(() => injectionObserver.disconnect(), 60_000);
+
+  return () => {
+    injectionObserver.disconnect();
+    clearTimeout(stopTimer);
+  };
 }
 
 jQuery(async ($) => {
@@ -1297,7 +1301,16 @@ jQuery(async ($) => {
   /** @param {() => void} fn */
   const onDispose = (fn) => cleanupTasks.push(fn);
 
-  const settingsHtml = await $.get(`${extFolderPath}/palette-talk.html`);
+  let settingsHtml;
+  try {
+    settingsHtml = await $.get(`${extFolderPath}/palette-talk.html`);
+  } catch (err) {
+    console.error(
+      `[Palette Talk] Failed to load settings HTML from '${extFolderPath}/palette-talk.html'. The extension folder name may be unexpected.`,
+      err
+    );
+    return; // Abort init cleanly instead of leaving a half-broken state.
+  }
 
   const elemStExtensionSettings2 = document.getElementById(
     "extensions_settings2"
@@ -1307,7 +1320,10 @@ jQuery(async ($) => {
   initializeStyleSheets();
   initializeSettingsUI();
   initializeNameOverridesUI();
-  initializeCharSpecificUI();
+  const disposeCharSpecificUI = initializeCharSpecificUI();
+  if (typeof disposeCharSpecificUI === "function") {
+    onDispose(disposeCharSpecificUI);
+  }
 
   // Note: Palette Talk has no wand-menu button on purpose — all settings live
   // in the Extensions panel, so a wand entry would just duplicate that.
@@ -1370,14 +1386,22 @@ jQuery(async ($) => {
   onDispose(() => personaManagementObserver.disconnect());
 
   if (!tryObservePersonaManagement()) {
-    // Panel doesn't exist yet, watch for it to be created
-    const panelWatcher = new MutationObserver(() => {
-      if (tryObservePersonaManagement()) {
-        panelWatcher.disconnect();
-      }
+    // Panel doesn't exist yet — watch (shallowly + debounced) for it to be
+    // created, and give up after a timeout so this never runs forever.
+    const panelWatcher = new MutationObserver(
+      debounce(() => {
+        if (tryObservePersonaManagement()) {
+          panelWatcher.disconnect();
+          clearTimeout(panelWatcherStop);
+        }
+      }, 250)
+    );
+    panelWatcher.observe(document.body, { childList: true });
+    const panelWatcherStop = setTimeout(() => panelWatcher.disconnect(), 60_000);
+    onDispose(() => {
+      panelWatcher.disconnect();
+      clearTimeout(panelWatcherStop);
     });
-    panelWatcher.observe(document.body, { childList: true, subtree: true });
-    onDispose(() => panelWatcher.disconnect());
   }
 
   // Watch for theme changes to update colors automatically
@@ -1410,6 +1434,12 @@ jQuery(async ($) => {
       } catch (_) {
         /* noop — keep disposing the rest */
       }
+    }
+    // Tear down the low-level DOM observers created in st-utils.js too.
+    try {
+      disposeStObservers();
+    } catch (_) {
+      /* noop */
     }
     // Remove injected DOM nodes.
     [

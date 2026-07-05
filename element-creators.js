@@ -1,4 +1,4 @@
-import { ColorizeSourceType } from "./index.js";
+import { ColorizeSourceType } from "./constants.js";
 import { linkInputColorTextPicker } from "./utils.js";
 
 /** @typedef {{value: any, text: string, description: string}} DropdownOptionObject */

@@ -60,8 +60,15 @@ function onCharCardChanged(mutationList, observer) {
             continue;
         }
 
-        const stChar = STCharacter.fromAvatar(CharacterType.CHARACTER, avatarFilePath);
-        expEventSource.emit(exp_event_type.CHAR_CARD_CHANGED, stChar);
+        // fromAvatar validates against the character list and can throw (e.g.
+        // during list init, or for a transient/unknown avatar). Swallow it so a
+        // single bad mutation doesn't spam the console or break the observer.
+        try {
+            const stChar = STCharacter.fromAvatar(CharacterType.CHARACTER, avatarFilePath);
+            expEventSource.emit(exp_event_type.CHAR_CARD_CHANGED, stChar);
+        } catch (err) {
+            console.debug("[Palette Talk] Ignoring unresolved char card change:", err);
+        }
     }
 }
 
@@ -125,7 +132,12 @@ function onPersonasChanged(mutationList, observer) {
         }
 
         const avatarFileName = avatarFilePath.slice(avatarFilePath.lastIndexOf('/') + 1);
-        return STCharacter.fromAvatar(CharacterType.PERSONA, avatarFileName);
+        try {
+            return STCharacter.fromAvatar(CharacterType.PERSONA, avatarFileName);
+        } catch (err) {
+            console.debug("[Palette Talk] Ignoring unresolved persona avatar:", err);
+            return null;
+        }
     }
 }
 
@@ -158,42 +170,71 @@ function onChatChanged(mutationList, observer) {
     }
 }
 
+// Track every observer we create so they can be torn down on hot-reload.
+/** @type {MutationObserver[]} */
+const stObservers = [];
+
+/**
+ * Safely observes a target if it exists, logging a warning otherwise. This
+ * prevents a missing/renamed DOM node from throwing at module-load time and
+ * taking the whole extension down.
+ *
+ * @param {string} elementId
+ * @param {MutationCallback} callback
+ * @param {MutationObserverInit} config
+ * @param {(el: HTMLElement) => (Element | null)} [resolveTarget]
+ */
+function safeObserve(elementId, callback, config, resolveTarget) {
+    const root = document.getElementById(elementId);
+    if (!root) {
+        console.warn(`[Palette Talk] Element '#${elementId}' not found; related updates disabled.`);
+        return;
+    }
+    const target = resolveTarget ? resolveTarget(root) : root;
+    if (!target) {
+        console.warn(`[Palette Talk] Observe target inside '#${elementId}' not found; related updates disabled.`);
+        return;
+    }
+    const observer = new MutationObserver(callback);
+    observer.observe(target, config);
+    stObservers.push(observer);
+}
+
 //#region charCardChanged
-
-const elemCharCardForm = document.getElementById("form_create");
-const elemAvatarUrl = elemCharCardForm.querySelector("input#avatar_url_pole");
-
-const charCardChangedObserver = new MutationObserver(onCharCardChanged);
-/** @type {MutationObserverInit} */
-const charCardChangedObserverConfig = { attributeFilter: ["value"] };
-
-charCardChangedObserver.observe(elemAvatarUrl, charCardChangedObserverConfig);
-
+safeObserve(
+    "form_create",
+    onCharCardChanged,
+    { attributeFilter: ["value"] },
+    (form) => form.querySelector("input#avatar_url_pole")
+);
 //#endregion
 
 //#region personaChanged
-
-const elemUserAvatarBlock = document.getElementById("user_avatar_block");
-
-const personasObserver = new MutationObserver(onPersonasChanged);
-/** @type {MutationObserverInit} */
-const personasObserverConfig = { subtree: true, attributeFilter: ["class"], childList: true };
-
-personasObserver.observe(elemUserAvatarBlock, personasObserverConfig);
-
+safeObserve(
+    "user_avatar_block",
+    onPersonasChanged,
+    { subtree: true, attributeFilter: ["class"], childList: true }
+);
 //#endregion
 
 //#region chatChanged
-
-const elemChat = document.getElementById("chat");
-
-const chatObserver = new MutationObserver(onChatChanged);
-/** @type {MutationObserverInit} */
-const chatObserverConfig = { childList: true };
-
-chatObserver.observe(elemChat, chatObserverConfig);
-
+safeObserve("chat", onChatChanged, { childList: true });
 //#endregion
+
+/**
+ * Disconnects all internal MutationObservers. Called on hot-reload/dispose so
+ * a re-install without a full page reload doesn't leave stale observers running.
+ */
+export function disposeStObservers() {
+    for (const observer of stObservers) {
+        try {
+            observer.disconnect();
+        } catch (_) {
+            /* noop */
+        }
+    }
+    stObservers.length = 0;
+}
 
 //#endregion Events
 
@@ -212,7 +253,10 @@ export function isInAnyChat() {
  * @returns {boolean}
  */
 export function isInCharacterChat() {
-    return !!getContext().characterId;
+    // NB: characterId can legitimately be 0 (the first character), so a plain
+    // truthiness check would wrongly report "no chat" for that character.
+    const characterId = getContext().characterId;
+    return characterId !== undefined && characterId !== null && characterId !== "";
 }
 
 /**
@@ -262,11 +306,15 @@ export function getCurrentPersona() {
 export function getCurrentCharacter() {
     const stContext = getContext();
     const currCharIndex = stContext.characterId;
-    if (!currCharIndex)
+    // characterId can be 0, so check for absence explicitly rather than falsiness.
+    if (currCharIndex === undefined || currCharIndex === null || currCharIndex === "")
         return null;
 
-    const currCharAvatar = stContext.characters[currCharIndex].avatar;
-    return STCharacter.fromAvatar(CharacterType.CHARACTER, currCharAvatar);
+    const character = stContext.characters[currCharIndex];
+    if (!character)
+        return null;
+
+    return STCharacter.fromAvatar(CharacterType.CHARACTER, character.avatar);
 }
 
 /**
@@ -281,19 +329,36 @@ export function getCurrentGroupCharacters() {
         return null;
 
     const currGroup = stContext.groups.find(group => group.id === currGroupId);
+    if (!currGroup)
+        return null;
+
     return currGroup.members
-        .map(charAvatar => STCharacter.fromAvatar(CharacterType.CHARACTER, charAvatar));
+        .map(charAvatar => {
+            try {
+                return STCharacter.fromAvatar(CharacterType.CHARACTER, charAvatar);
+            } catch (err) {
+                console.debug("[Palette Talk] Skipping unresolved group member:", charAvatar, err);
+                return null;
+            }
+        })
+        .filter(Boolean);
 }
 
-const avatarUrlPole = document.getElementById("avatar_url_pole");
 /**
  * Gets the character that is currently being or was last edited. This is not necessarily the current character,
  * as a character's card can be edited from a group chat.
  * 
- * @returns {STCharacter}
+ * @returns {STCharacter?}
  */
 export function getCharacterBeingEdited() {
-    return STCharacter.fromAvatar(CharacterType.CHARACTER, avatarUrlPole.getAttribute("value"));
+    // Resolve lazily: the element may not exist at module-load time, and looking
+    // it up on demand avoids a hard dependency during initialization.
+    const avatarUrlPole = document.getElementById("avatar_url_pole");
+    const avatar = avatarUrlPole?.getAttribute("value");
+    if (!avatar) {
+        return null;
+    }
+    return STCharacter.fromAvatar(CharacterType.CHARACTER, avatar);
 }
 
 /**
@@ -305,6 +370,9 @@ export function getCharacterBeingEdited() {
 export function getMessageAuthor(message) {
     /** @type {HTMLImageElement} */
     const avatarThumbImg = message.querySelector(".mesAvatarWrapper > .avatar > img");
+    if (!avatarThumbImg) {
+        return null;
+    }
     const avatarThumbSrc = avatarThumbImg.getAttribute("src");
 
     const isUser = message.getAttribute("is_user") === "true";
