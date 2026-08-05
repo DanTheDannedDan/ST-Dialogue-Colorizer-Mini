@@ -122,41 +122,78 @@ export function getAllRadioButtonsInGroup(groupName) {
 }
 
 /**
- * 
+ * Wires a `<input type="color">` and a text field together so each reflects the
+ * other, accepting any CSS colour notation in the text field.
+ *
  * @param {HTMLInputElement} picker 
  * @param {HTMLInputElement} textbox 
- * @param {(textboxValue: string) => string?} textboxValueProcessor 
- * @param {(colorValue: string) => void} onSuccess 
+ * @param {(textboxValue: string) => string?} textboxValueProcessor Returns a
+ * normalised colour string, or `null` when the input is invalid.
+ * @param {(colorValue: string) => void} onSuccess Committed value.
+ * @param {((colorValue: string) => void)=} onPreview Continuous value while the
+ * user is still interacting; nothing should be persisted from this.
+ * @param {(() => void)=} onPreviewEnd Called when previewing stops.
  */
-export function linkInputColorTextPicker(picker, textbox, textboxValueProcessor, onSuccess) {
-    // Using .addEventListener was not seeming to work correctly, so I swapped to JQuery. 
-    // It was probably an error on my part.
+export function linkInputColorTextPicker(picker, textbox, textboxValueProcessor, onSuccess, onPreview, onPreviewEnd) {
+    /**
+     * The picker element only understands `#RRGGBB`, so any alpha or alternate
+     * notation has to be flattened before assigning to it.
+     * @param {string} value
+     */
+    const toPickerValue = (value) => {
+        const parsed = ExColor.parse(value);
+        return parsed ? '#' + parsed.toHex() : "#000000";
+    };
+
+    // 'input' fires continuously while the picker is dragged, giving live
+    // feedback; 'change' fires once the dialog is dismissed and commits.
+    $(picker).on('input', () => {
+        textbox.value = picker.value;
+        textbox.classList.remove("sdc-input-invalid");
+        onPreview?.(picker.value);
+    });
+
     $(picker).on('change', () => {
         const pickerValue = picker.value;
-        const textValue = convertColorPickerValueToTextValue(pickerValue);
 
-        textbox.value = textValue;
-        textbox.setAttribute("lastValidValue", textValue);
+        textbox.value = pickerValue;
+        textbox.setAttribute("lastValidValue", pickerValue);
+        textbox.classList.remove("sdc-input-invalid");
 
+        onPreviewEnd?.();
         onSuccess(pickerValue);
     });
 
+    // Live validation + preview as the user types, without committing.
+    $(textbox).on('input', () => {
+        const raw = textbox.value;
+        const isEmpty = raw.trim().length === 0;
+        const processed = isEmpty ? null : textboxValueProcessor(raw);
+
+        textbox.classList.toggle("sdc-input-invalid", !processed && !isEmpty);
+        if (processed) {
+            picker.value = toPickerValue(processed);
+            onPreview?.(processed);
+        }
+    });
+
     $(textbox).on('focusout', () => {
-        let textboxValue = textboxValueProcessor(textbox.value);
+        onPreviewEnd?.();
+
+        const textboxValue = textboxValueProcessor(textbox.value);
         if (textboxValue === null) {
+            // Reject invalid input by restoring the last good value.
             const lastValidValue = textbox.getAttribute("lastValidValue") ?? picker.value;
             textbox.value = lastValidValue;
             textbox.setAttribute("lastValidValue", lastValidValue);
+            textbox.classList.remove("sdc-input-invalid");
             return;
         }
 
-        let pickerValue = "#000000";
-        if (textboxValue.length !== 0) 
-            pickerValue = '#' + ExColor.hexShortToLong(textboxValue);
-
         textbox.value = textboxValue;
         textbox.setAttribute("lastValidValue", textboxValue);
-        picker.value = pickerValue;
+        textbox.classList.remove("sdc-input-invalid");
+        picker.value = toPickerValue(textboxValue);
 
         onSuccess(textboxValue);
     });
@@ -171,44 +208,13 @@ export function linkInputColorTextPicker(picker, textbox, textboxValueProcessor,
 export function setInputColorPickerComboValue(elemComboWrapper, hexValue) {
     const textInput = /** @type {HTMLInputElement} */ (elemComboWrapper.querySelector(`input[type="text"]`));
     const colorInput =/** @type {HTMLInputElement} */ (elemComboWrapper.querySelector(`input[type="color"]`));
-    
+
     textInput.value = hexValue ?? "";
-    colorInput.value = hexValue ?? "#000000";
-}
+    textInput.classList.remove("sdc-input-invalid");
+    if (hexValue) textInput.setAttribute("lastValidValue", hexValue);
 
-/**
- * Assumes a value directly taken from a color picker value property.
- * 
- * @param {string} pickerHexValue 
- */
-function convertColorPickerValueToTextValue(pickerHexValue) {
-    if (pickerHexValue === undefined) 
-        throw new TypeError("Picker hex string value is undefined.");
-
-    if (ExColor.hexCanBeShort(pickerHexValue)) 
-        pickerHexValue = '#' + ExColor.hexLongToShort(pickerHexValue);
-
-    return pickerHexValue;
-}
-
-/**
- * Assumes a value directly taken from a textbox value property. 
- * 
- * Returns `null` on invalid hex values.  
- * Returns `#000000` on empty string.
- * 
- * @param {string?} textHexValue 
- */
-function convertColorTextValueToPickerValue(textHexValue) {
-    if (textHexValue === undefined || textHexValue === null) 
-        return null;
-
-    textHexValue = textHexValue.trim();
-    if (textHexValue.length === 0) 
-        return "#000000";
-    if (!ExColor.isValidHexString(textHexValue)) 
-        return null;
-
-    textHexValue = '#' + ExColor.hexShortToLong(textHexValue);
-    return textHexValue;
+    // The native picker can't represent alpha or non-hex notations, so store a
+    // flattened hex approximation there.
+    const parsed = hexValue ? ExColor.parse(hexValue) : null;
+    colorInput.value = parsed ? '#' + parsed.toHex() : "#000000";
 }

@@ -16,13 +16,18 @@ export function createTemplateClone(templateId, deep) {
 
 /**
  * @param {(textboxValue: string) => string?} textboxValueProcessor 
- * @param {(colorHex: string) => void} onColorChanged 
+ * @param {(colorValue: string) => void} onColorChanged Committed value.
+ * @param {((colorValue: string) => void)=} onColorPreview Called continuously
+ * while the user drags the picker or types, before the value is committed.
+ * @param {(() => void)=} onPreviewEnd Called when previewing stops.
  * @returns 
  */
-export function createColorTextPickerCombo(textboxValueProcessor, onColorChanged) {
+export function createColorTextPickerCombo(textboxValueProcessor, onColorChanged, onColorPreview, onPreviewEnd) {
     const textInput = document.createElement('input');
     textInput.className = "text_pole textarea_compact";
     textInput.type = "text";
+    textInput.placeholder = "#RRGGBB / rgb() / hsl()";
+    textInput.title = "Any CSS color: #RRGGBB, #RGBA, rgb(), rgba(), hsl(), hsla(), or a name like 'tomato'.";
 
     const pickerInput = document.createElement('input');
     pickerInput.className = "dc-color-picker";
@@ -37,7 +42,7 @@ export function createColorTextPickerCombo(textboxValueProcessor, onColorChanged
     wrapper.appendChild(pickerWrapper);
     wrapper.appendChild(textInput);
 
-    linkInputColorTextPicker(pickerInput, textInput, textboxValueProcessor, onColorChanged);
+    linkInputColorTextPicker(pickerInput, textInput, textboxValueProcessor, onColorChanged, onColorPreview, onPreviewEnd);
     return wrapper;
 }
 

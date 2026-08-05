@@ -44,6 +44,11 @@ export const exp_event_type = {
      * @param {HTMLElement} removedMessage
      */
     MESSAGE_REMOVED: "message_removed",
+    /**
+     * Emitted once the `#chat` MutationObserver has successfully attached.
+     * Lets listeners tag messages that were rendered before we were watching.
+     */
+    CHAT_OBSERVER_READY: "chat_observer_ready",
 };
 
 /**
@@ -174,30 +179,57 @@ function onChatChanged(mutationList, observer) {
 /** @type {MutationObserver[]} */
 const stObservers = [];
 
+/** @type {number[]} Pending retry timers, cleared on dispose. */
+const stRetryTimers = [];
+
 /**
- * Safely observes a target if it exists, logging a warning otherwise. This
- * prevents a missing/renamed DOM node from throwing at module-load time and
- * taking the whole extension down.
+ * Safely observes a target, retrying until the node exists.
+ *
+ * This module is evaluated at import time, which can happen well before
+ * SillyTavern has finished building its DOM (`#chat`, `#form_create`,
+ * `#user_avatar_block` are all created lazily). The previous implementation
+ * bailed out permanently on the first miss, which silently disabled message
+ * tagging — and with it the whole name-based ("Send As" NPC) colouring path.
+ *
+ * We now poll on a bounded schedule and only give up after `maxAttempts`.
  *
  * @param {string} elementId
  * @param {MutationCallback} callback
  * @param {MutationObserverInit} config
  * @param {(el: HTMLElement) => (Element | null)} [resolveTarget]
+ * @param {(target: Element) => void} [onAttached] Called once the observer is live.
  */
-function safeObserve(elementId, callback, config, resolveTarget) {
-    const root = document.getElementById(elementId);
-    if (!root) {
-        console.warn(`[Palette Talk] Element '#${elementId}' not found; related updates disabled.`);
-        return;
-    }
-    const target = resolveTarget ? resolveTarget(root) : root;
-    if (!target) {
-        console.warn(`[Palette Talk] Observe target inside '#${elementId}' not found; related updates disabled.`);
-        return;
-    }
-    const observer = new MutationObserver(callback);
-    observer.observe(target, config);
-    stObservers.push(observer);
+function safeObserve(elementId, callback, config, resolveTarget, onAttached) {
+    const intervalMs = 250;
+    const maxAttempts = 120; // ~30s — generous enough for a slow first paint.
+    let attempts = 0;
+
+    const attempt = () => {
+        attempts++;
+        const root = document.getElementById(elementId);
+        const target = root ? (resolveTarget ? resolveTarget(root) : root) : null;
+
+        if (target) {
+            const observer = new MutationObserver(callback);
+            observer.observe(target, config);
+            stObservers.push(observer);
+            try {
+                onAttached?.(target);
+            } catch (err) {
+                console.warn(`[Palette Talk] onAttached handler for '#${elementId}' failed:`, err);
+            }
+            return;
+        }
+
+        if (attempts >= maxAttempts) {
+            console.warn(`[Palette Talk] Element '#${elementId}' never appeared; related updates disabled.`);
+            return;
+        }
+
+        stRetryTimers.push(window.setTimeout(attempt, intervalMs));
+    };
+
+    attempt();
 }
 
 //#region charCardChanged
@@ -218,7 +250,12 @@ safeObserve(
 //#endregion
 
 //#region chatChanged
-safeObserve("chat", onChatChanged, { childList: true });
+safeObserve("chat", onChatChanged, { childList: true }, undefined, () => {
+    // The chat node may have appeared with messages already rendered (late
+    // attach, or a chat restored on startup). Announce readiness so listeners
+    // can tag whatever is already on screen.
+    expEventSource.emit(exp_event_type.CHAT_OBSERVER_READY);
+});
 //#endregion
 
 /**
@@ -226,6 +263,10 @@ safeObserve("chat", onChatChanged, { childList: true });
  * a re-install without a full page reload doesn't leave stale observers running.
  */
 export function disposeStObservers() {
+    for (const timerId of stRetryTimers.splice(0)) {
+        clearTimeout(timerId);
+    }
+
     for (const observer of stObservers) {
         try {
             observer.disconnect();

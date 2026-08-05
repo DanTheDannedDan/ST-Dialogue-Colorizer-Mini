@@ -349,20 +349,26 @@
   background: rgba(255, 255, 255, 0.03);
 }
 
-/* Hex input field */
+/* Color input field — accepts hex, rgb(), hsl() and named colors, so it needs
+   more room than the old hex-only field and must not force uppercase. */
 .sdc-hex-input {
-  width: 68px !important;
+  width: 118px !important;
   height: 22px !important;
   padding: 2px 5px !important;
   font-size: 0.8em !important;
   font-family: monospace;
-  text-transform: uppercase;
   border-radius: 3px !important;
 }
 
 .sdc-hex-input::placeholder {
   opacity: 0.4;
   text-transform: none;
+}
+
+/* Invalid color input — flagged live as the user types, without blocking. */
+.sdc-input-invalid {
+  border-color: var(--crimson70a, #d9534f) !important;
+  background-color: rgba(217, 83, 79, 0.08) !important;
 }
 
 /* Custom color picker wrapper - smaller version */
@@ -470,6 +476,19 @@ body.sdc-eyedropper-active img {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   font-size: 0.85em;
+  white-space: nowrap;
+}
+
+/* WCAG contrast readout — green when the color clears AA against the chat
+   background, amber when it doesn't. */
+.sdc-preview-label[data-sdc-contrast="pass"] {
+  opacity: 0.9;
+  color: var(--okGreen70a, #5cb85c);
+}
+
+.sdc-preview-label[data-sdc-contrast="fail"] {
+  opacity: 0.9;
+  color: var(--warning, #e0a800);
 }
 
 .sdc-preview-quote {
@@ -558,6 +577,12 @@ body.sdc-eyedropper-active img {
   min-width: 100px;
 }
 
+/* The name suggestion list is a flex child of the add-row; keep it collapsed
+   in case a theme resets the UA stylesheet's `display: none`. */
+.sdc-extension-settings .sdc-name-override-add datalist {
+  display: none;
+}
+
 .sdc-extension-settings .sdc-name-override-addbtn {
   flex-shrink: 0;
 }
@@ -599,8 +624,9 @@ body.sdc-eyedropper-active img {
     height: 32px !important;
   }
 
+  /* Wide enough for rgb()/hsl() notations on mobile too. */
   .sdc-hex-input {
-    width: 84px !important;
+    width: 130px !important;
   }
 
   .sdc-name-override-del {

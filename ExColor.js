@@ -116,6 +116,141 @@ export class ExColor {
     }
 
     /**
+     * Converts this color to a CSS colour string, emitting `rgba()` whenever the
+     * colour is translucent (hex can't represent alpha in a way older ST themes
+     * reliably handle).
+     *
+     * @returns {string}
+     */
+    toCssString() {
+        const { r, g, b, a } = this.toRgb();
+        const alpha = a === undefined || a === null ? 255 : a;
+        if (alpha >= 255) {
+            return '#' + this.toHex();
+        }
+
+        const alpha01 = Math.round((alpha / 255) * 1000) / 1000;
+        return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${alpha01})`;
+    }
+
+    /**
+     * Relative luminance per WCAG 2.x. Alpha is ignored.
+     *
+     * @returns {number} `0` (black) to `1` (white).
+     */
+    getLuminance() {
+        const { r, g, b } = this.toRgb();
+        const channel = (value) => {
+            const v = value / 255;
+            return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+        };
+        return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
+    }
+
+    /**
+     * WCAG 2.x contrast ratio between two colours, from `1` (identical) to
+     * `21` (black on white).
+     *
+     * @param {ExColor} a
+     * @param {ExColor} b
+     * @returns {number}
+     */
+    static contrastRatio(a, b) {
+        const lumA = a.getLuminance();
+        const lumB = b.getLuminance();
+        const lighter = Math.max(lumA, lumB);
+        const darker = Math.min(lumA, lumB);
+        return (lighter + 0.05) / (darker + 0.05);
+    }
+
+    /**
+     * Parses any CSS colour string into an `ExColor`, including `rgb()/rgba()`,
+     * `hsl()/hsla()`, named colours, `#RGBA`/`#RRGGBBAA` and modern syntaxes
+     * such as `oklch()`.
+     *
+     * Rather than hand-rolling a parser for every notation, this defers to the
+     * browser's own CSS engine and then reads back the normalised value. That
+     * keeps the accepted syntax in lockstep with whatever the user's browser
+     * actually supports.
+     *
+     * @param {any} input
+     * @returns {ExColor?} `null` when the value isn't a valid CSS colour.
+     */
+    static parse(input) {
+        if (input instanceof ExColor) return input;
+        if (typeof input !== 'string') return null;
+
+        const value = input.trim();
+        if (value.length === 0) return null;
+
+        // `transparent` normalises to rgba(0,0,0,0) and would silently produce
+        // an invisible colour; reject it as a colour choice.
+        if (value.toLowerCase() === 'transparent') return null;
+
+        const probe = document.createElement('span').style;
+        probe.color = '';
+        probe.color = value;
+        // The assignment is a no-op for invalid values, leaving color empty.
+        if (!probe.color) return null;
+
+        let normalized = probe.color;
+
+        // Some engines only resolve modern colour functions once the value is
+        // laid out, so fall back to a computed style read.
+        if (/^(color|oklch|oklab|lab|lch|hwb)\(/i.test(normalized)) {
+            const probeEl = document.createElement('span');
+            probeEl.style.cssText = `color:${value};position:absolute;`;
+            document.body.appendChild(probeEl);
+            normalized = getComputedStyle(probeEl).color || normalized;
+            probeEl.remove();
+        }
+
+        const match = normalized.match(
+            /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.%]+))?\s*\)$/i
+        );
+        if (!match) return null;
+
+        const [, r, g, b, rawAlpha] = match;
+
+        let alpha = 255;
+        if (rawAlpha !== undefined) {
+            alpha = rawAlpha.endsWith('%')
+                ? (parseFloat(rawAlpha) / 100) * 255
+                : parseFloat(rawAlpha) * 255;
+        }
+
+        return ExColor.fromRgb([
+            Math.round(parseFloat(r)),
+            Math.round(parseFloat(g)),
+            Math.round(parseFloat(b)),
+            Math.round(alpha),
+        ]);
+    }
+
+    /**
+     * Whether the given string is a colour value this extension can understand.
+     * Broader than {@linkcode ExColor.isValidHexString} — accepts every CSS
+     * colour notation the browser supports.
+     *
+     * @param {any} input
+     * @returns {boolean}
+     */
+    static isValidColorString(input) {
+        return ExColor.parse(input) !== null;
+    }
+
+    /**
+     * Normalises any CSS colour string to a canonical form for storage.
+     * Returns `#RRGGBB` for opaque colours and `rgba(...)` when translucent.
+     *
+     * @param {any} input
+     * @returns {string?} `null` when the value isn't a valid colour.
+     */
+    static normalizeColorString(input) {
+        return ExColor.parse(input)?.toCssString() ?? null;
+    }
+
+    /**
      * Creates a new `ExColor` object from the specified RGBA values.
      * 
      * @param {ColorArray | RgbaObject} rgba An array of numbers `[r, g, b, a?]` or an object `{ r: number, g: number, b: number, a?: number }`. 
