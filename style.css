@@ -1,645 +1,287 @@
 /* ============================================================
- * Palette Talk Extension Styles
+ * ST Dialogue Colorizer Mini Styles
+ * Zero animations/transitions, zero @layer/:has()/color-mix()
+ * for full compatibility with SillyTavern & all TauriTavern WebViews.
  * ============================================================ */
 
-:root {
-  --sdc-bg: var(--SmartThemeBlurTintColor, var(--SmartThemeBotMesBlurTintColor, #1a1a1a));
-  --sdc-fg: var(--SmartThemeBodyColor, #e6e6e6);
-  --sdc-accent: var(--SmartThemeQuoteColor, #5aa9ff);
-  --sdc-border: var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.12));
-  --sdc-muted: color-mix(in srgb, var(--sdc-fg) 55%, transparent);
-  /* Soft layered surfaces (card a touch darker than its rows). */
-  --sdc-set-surface: color-mix(in srgb, var(--sdc-bg) 88%, rgba(255, 255, 255, 0.03) 12%);
-  --sdc-set-surface-strong: color-mix(in srgb, var(--sdc-bg) 80%, rgba(255, 255, 255, 0.08) 20%);
-  --sdc-accent-soft: color-mix(in srgb, var(--sdc-accent) 16%, var(--sdc-bg) 84%);
-}
-
-.sdc-extension-settings .dc-flex-container {
-  display: flex;
-  flex-flow: column nowrap;
-  justify-content: space-evenly;
-}
-
-.sdc-extension-settings .dc-small-desc {
-  font-size: smaller;
-  color: darkgray;
-  padding: 0;
-  margin-bottom: 4px;
-}
-
-/* Color input combo - shared between settings and character editor */
-.sdc-extension-settings .dc-color-input-combo,
-.sdc-color-override-container .dc-color-input-combo {
-  display: flex;
-  align-items: center;
-  flex: 1;
-}
-
-/* Color picker styles - shared between settings and character editor */
-.sdc-extension-settings .dc-color-picker,
-.sdc-color-override-container .dc-color-picker {
-  -webkit-appearance: none;
-  -moz-appearance: none;
-  appearance: none;
-  padding: 0;
-  overflow: hidden;
-  width: 150%;
-  height: 150%;
-  margin: -25%;
-}
-
-.sdc-extension-settings .dc-color-picker-wrapper,
-.sdc-color-override-container .dc-color-picker-wrapper {
-  overflow: hidden;
-  width: 1.5em;
-  height: 1.5em;
-  margin: 5px;
-  border: 1px solid gray;
-  border-radius: 20%;
-}
-
-.sdc-extension-settings .dc-color-picker::-webkit-color-swatch-wrapper,
-.sdc-extension-settings .dc-color-picker::-moz-color-swatch-wrapper,
-.sdc-color-override-container .dc-color-picker::-webkit-color-swatch-wrapper,
-.sdc-color-override-container .dc-color-picker::-moz-color-swatch-wrapper {
-  padding: 0;
-}
-
-.sdc-extension-settings .dc-color-picker::-webkit-color-swatch,
-.sdc-extension-settings .dc-color-picker::-moz-color-swatch,
-.sdc-color-override-container .dc-color-picker::-webkit-color-swatch,
-.sdc-color-override-container .dc-color-picker::-moz-color-swatch {
-  border: none;
-}
-
-/* ---- Rounded settings card (matches the rest of my extensions) ---- */
-.sdc-extension-settings .sdc_settings_card {
-  margin-top: 6px;
-  padding: 14px;
-  border: 1px solid var(--sdc-border);
-  border-radius: 16px;
-  background: linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--sdc-accent) 9%, transparent) 0%,
-      transparent 22%
-    ),
-    var(--sdc-set-surface);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
-  color: var(--sdc-fg);
-}
-
-.sdc-extension-settings .sdc_settings_intro {
-  margin: 0 0 12px;
-  font-size: 0.84em;
-  line-height: 1.5;
-  color: var(--sdc-muted);
-}
-
-/* Each character/persona group is a soft section inside the card. */
-.sdc-extension-settings .dc-color-settings-group {
-  gap: 6px;
-  padding: 12px;
-  margin: 0 0 12px;
-  border: 1px solid var(--sdc-border);
-  border-radius: 12px;
-  background: var(--sdc-set-surface-strong);
-}
-
-.sdc-extension-settings .dc-color-settings-group:last-of-type {
-  margin-bottom: 0;
-}
-
-/* Section heading: small muted uppercase label. */
-.sdc-extension-settings .sdc_settings_section_head {
-  margin: 0 0 4px;
-}
-
-.sdc-extension-settings .sdc_settings_section_head label {
-  cursor: default;
-  margin: 0;
-}
-
-.sdc-extension-settings .sdc_settings_heading {
-  margin: 0;
-  font-size: 0.72em;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--sdc-muted);
-}
-
-/* A settings row (label + control), rounded like Quotes/Smart Notify. */
-.sdc-extension-settings .sdc_set_row {
-  display: flex;
-  flex-flow: column nowrap;
-  gap: 6px;
-  padding: 10px 12px;
-  margin: 0;
-  border: 1px solid var(--sdc-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--sdc-bg) 70%, transparent);
-}
-
-.sdc-extension-settings .sdc_set_row > label {
-  margin: 0;
-  font-size: 0.9em;
-}
-
-/* The color-source dropdown gets the same rounded-row treatment.
- * (Exclude section heads, static-color rows and toggle rows — they're styled
- * separately.) */
-.sdc-extension-settings
-  .dc-color-settings-group
-  > div:not(.sdc_settings_section_head):not(.sdc_set_row):not(.dc-checkbox-container):not(.sdc-name-overrides-list):not(.sdc-name-override-add) {
-  display: flex;
-  flex-flow: column nowrap;
-  gap: 6px;
-  padding: 10px 12px;
-  border: 1px solid var(--sdc-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--sdc-bg) 70%, transparent);
-}
-
-.sdc-extension-settings .dc-color-settings-group select {
-  border-radius: 8px;
-}
-
-.sdc-extension-settings .dc-slider-container {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.sdc-extension-settings .dc-slider {
-  flex: 1;
-  min-width: 150px;
-}
-
-.sdc-extension-settings .dc-slider-value {
-  min-width: 40px;
-  text-align: right;
-  font-family: monospace;
-}
-
-/* Toggle rows: rounded, with accent border/fill when checked (like my other
- * extensions via :has(input:checked)). */
-.sdc-extension-settings .dc-checkbox-container {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--sdc-border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--sdc-bg) 70%, transparent);
-  cursor: pointer;
-  transition: border-color 0.15s ease, background 0.15s ease;
-}
-
-.sdc-extension-settings .dc-checkbox-container:hover {
-  border-color: color-mix(in srgb, var(--sdc-accent) 40%, var(--sdc-border) 60%);
-}
-
-.sdc-extension-settings .dc-checkbox-container:has(input:checked) {
-  border-color: color-mix(in srgb, var(--sdc-accent) 55%, var(--sdc-border) 45%);
-  background: color-mix(in srgb, var(--sdc-accent) 12%, var(--sdc-bg) 88%);
-}
-
-.sdc-extension-settings .dc-checkbox-container input[type="checkbox"] {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  cursor: pointer;
-  flex-shrink: 0;
-  accent-color: var(--sdc-accent);
-}
-
-.sdc-extension-settings .dc-checkbox-container label {
-  margin: 0;
-  cursor: pointer;
-  font-size: 0.9em;
-}
-
-.sdc-extension-settings .dc-adjustments-group {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #444;
-}
-
-.sdc-extension-settings .dc-adjustments-group > label:first-child {
-  font-weight: bold;
-  display: block;
-  margin-bottom: 8px;
-  font-size: 0.95em;
-}
-
-/* Character/Persona Color Override Styles - Compact Inline Design */
 .sdc-color-override-container {
-  margin-top: 8px;
-  margin-bottom: 8px;
-  padding: 6px 0;
+    margin-top: 8px;
+    margin-bottom: 8px;
+    padding: 6px 0;
 }
 
 .sdc-separator {
-  height: 1px;
-  background: var(--SmartThemeBorderColor, #444);
-  margin: 0 0 6px 0;
-  opacity: 0.2;
+    height: 1px;
+    background: var(--SmartThemeBorderColor, #444);
+    margin: 0 0 6px 0;
+    opacity: 0.25;
 }
 
 .sdc-label-row {
-  display: flex;
-  align-items: center;
-  margin-bottom: 5px;
+    display: flex;
+    align-items: center;
+    margin-bottom: 5px;
 }
 
 .sdc-override-label {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  margin: 0;
-  cursor: default;
-  font-weight: 500;
-  font-size: 0.85em;
-  opacity: 0.85;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    margin: 0;
+    cursor: default;
+    font-weight: 500;
+    font-size: 0.85em;
+    opacity: 0.85;
 }
 
-/* Inline control row - main container for all color controls */
 .sdc-inline-color-row {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 6px;
-  background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
-  border-radius: 6px;
-  border: 1px solid var(--SmartThemeBorderColor, rgba(100, 100, 100, 0.3));
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 6px;
+    background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.14));
+    border-radius: 6px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(128, 128, 128, 0.3));
 }
 
-/* Preset swatches container */
-.sdc-preset-swatches {
-  display: flex;
-  align-items: center;
-  gap: 4px;
+.sdc-color-input {
+    flex: 1;
+    min-width: 110px;
+    height: 26px !important;
+    padding: 2px 6px !important;
+    font-size: 0.84em !important;
+    font-family: monospace;
+    border-radius: 4px !important;
 }
 
-/* Individual preset swatch button */
-.sdc-preset-swatch {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  border: 1.5px solid transparent;
-  cursor: pointer;
-  transition: all 0.12s ease;
-  padding: 0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  position: relative;
+.sdc-color-input::placeholder {
+    opacity: 0.45;
 }
 
-.sdc-preset-swatch:hover {
-  transform: scale(1.2);
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.35);
-}
-
-.sdc-preset-swatch:focus {
-  outline: none;
-}
-
-/* Selected state for preset swatches */
-.sdc-preset-swatch.selected {
-  border-color: var(--SmartThemeBodyColor, #fff);
-  box-shadow: 0 0 0 1.5px var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.4)),
-    0 1px 3px rgba(0, 0, 0, 0.3);
-  transform: scale(1.15);
-}
-
-.sdc-preset-swatch.selected::after {
-  content: "✓";
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  font-size: 10px;
-  font-weight: bold;
-  color: #fff;
-  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.5);
-}
-
-/* Divider between presets and custom */
-.sdc-color-divider {
-  width: 1px;
-  height: 18px;
-  background: var(--SmartThemeBorderColor, #555);
-  opacity: 0.35;
-  margin: 0 2px;
-}
-
-/* Custom color input wrapper */
-.sdc-custom-color-wrapper {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  padding: 1px 2px;
-  border-radius: 4px;
-  border: 1.5px solid transparent;
-  transition: all 0.12s ease;
-}
-
-.sdc-custom-color-wrapper.selected {
-  border-color: var(--SmartThemeQuoteColor, rgba(255, 255, 255, 0.3));
-  background: rgba(255, 255, 255, 0.03);
-}
-
-/* Color input field — accepts hex, rgb(), hsl() and named colors, so it needs
-   more room than the old hex-only field and must not force uppercase. */
-.sdc-hex-input {
-  width: 118px !important;
-  height: 22px !important;
-  padding: 2px 5px !important;
-  font-size: 0.8em !important;
-  font-family: monospace;
-  border-radius: 3px !important;
-}
-
-.sdc-hex-input::placeholder {
-  opacity: 0.4;
-  text-transform: none;
-}
-
-/* Invalid color input — flagged live as the user types, without blocking. */
 .sdc-input-invalid {
-  border-color: var(--crimson70a, #d9534f) !important;
-  background-color: rgba(217, 83, 79, 0.08) !important;
+    border-color: var(--crimson70a, #d9534f) !important;
+    background-color: rgba(217, 83, 79, 0.1) !important;
 }
 
-/* Custom color picker wrapper - smaller version */
-.sdc-custom-picker-wrapper {
-  width: 22px !important;
-  height: 22px !important;
-  margin: 0 !important;
-  border-radius: 3px !important;
-  flex-shrink: 0;
+.sdc-color-swatch-btn {
+    flex-shrink: 0;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border-radius: 4px;
+    border: 1px dashed var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.35));
+    background-color: #808080;
+    cursor: pointer;
 }
 
-/* Reset button */
+.sdc-color-swatch-btn.is-override {
+    border-style: solid;
+    border-color: var(--SmartThemeBodyColor, #ffffff);
+}
+
+.sdc-color-swatch-btn:focus {
+    outline: 1px solid var(--SmartThemeQuoteColor, #5aa9ff);
+}
+
+.sdc-eyedropper-btn,
 .sdc-reset-btn {
-  flex-shrink: 0;
-  width: 22px !important;
-  min-width: 22px !important;
-  height: 22px !important;
-  padding: 0 !important;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  transition: all 0.12s ease;
-  opacity: 0.6;
+    flex-shrink: 0;
+    width: 26px !important;
+    min-width: 26px !important;
+    height: 26px !important;
+    padding: 0 !important;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    opacity: 0.75;
 }
 
+.sdc-eyedropper-btn:hover,
 .sdc-reset-btn:hover {
-  opacity: 1;
-  background-color: var(--SmartThemeQuoteColor, rgba(255, 100, 100, 0.15));
-  transform: scale(1.1);
+    opacity: 1;
 }
 
+.sdc-eyedropper-btn i,
 .sdc-reset-btn i {
-  font-size: 0.8em;
-}
-
-/* Static rule for dialogue coloring */
-/* Uses the variable if defined, otherwise inherits (default behavior) */
-.mes[sdc-author_uid] .mes_text q,
-.mes[sdc-author_name] .mes_text q {
-  color: var(--character-color, inherit);
-  transition: color 0.2s ease;
-}
-
-/* ============================================================
- * Eyedropper button + active picking mode
- * ============================================================ */
-.sdc-eyedropper-btn {
-  flex-shrink: 0;
-  width: 22px !important;
-  min-width: 22px !important;
-  height: 22px !important;
-  padding: 0 !important;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 4px;
-  transition: all 0.12s ease;
-  opacity: 0.7;
-}
-
-.sdc-eyedropper-btn:hover {
-  opacity: 1;
-  background-color: color-mix(
-    in srgb,
-    var(--SmartThemeQuoteColor, #6c8cff) 22%,
-    transparent
-  );
-  transform: scale(1.1);
-}
-
-.sdc-eyedropper-btn i {
-  font-size: 0.8em;
+    font-size: 0.85em;
 }
 
 .sdc-eyedropper-btn-active {
-  opacity: 1;
-  box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, #6c8cff);
+    opacity: 1;
+    box-shadow: 0 0 0 2px var(--SmartThemeQuoteColor, #6c8cff);
 }
 
-/* While the click-on-avatar fallback is active, hint that avatars are pickable. */
 body.sdc-eyedropper-active {
-  cursor: crosshair !important;
+    cursor: crosshair !important;
 }
 
 body.sdc-eyedropper-active img {
-  cursor: crosshair !important;
-  outline: 2px dashed var(--SmartThemeQuoteColor, #6c8cff);
-  outline-offset: 1px;
+    cursor: crosshair !important;
+    outline: 2px dashed var(--SmartThemeQuoteColor, #6c8cff);
+    outline-offset: 1px;
 }
 
 /* ============================================================
- * Live dialogue preview (character/persona override UI)
+ * Custom In-WebView Color Picker Popover
  * ============================================================ */
-.sdc-preview-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-top: 6px;
-  font-size: 0.8em;
+.sdc-picker-popover {
+    position: fixed;
+    z-index: 2147483000;
+    width: 224px;
+    padding: 10px;
+    border-radius: 10px;
+    background: var(--SmartThemeBlurTintColor, #1e1e22);
+    color: var(--SmartThemeBodyColor, #ececec);
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.18));
+    box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+    user-select: none;
+    -webkit-user-select: none;
+    box-sizing: border-box;
 }
 
-.sdc-preview-label {
-  opacity: 0.55;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-size: 0.85em;
-  white-space: nowrap;
+.sdc-cp-sv {
+    position: relative;
+    width: 100%;
+    height: 140px;
+    border-radius: 6px;
+    overflow: hidden;
+    cursor: crosshair;
+    touch-action: none;
+    margin-bottom: 10px;
 }
 
-/* WCAG contrast readout — green when the color clears AA against the chat
-   background, amber when it doesn't. */
-.sdc-preview-label[data-sdc-contrast="pass"] {
-  opacity: 0.9;
-  color: var(--okGreen70a, #5cb85c);
+.sdc-cp-sv-white {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to right, #ffffff, rgba(255, 255, 255, 0));
 }
 
-.sdc-preview-label[data-sdc-contrast="fail"] {
-  opacity: 0.9;
-  color: var(--warning, #e0a800);
+.sdc-cp-sv-black {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to top, #000000, rgba(0, 0, 0, 0));
 }
 
-.sdc-preview-quote {
-  font-style: italic;
-  font-weight: 600;
-  transition: color 0.2s ease;
-  color: var(--SmartThemeBodyColor, inherit);
+.sdc-cp-sv-thumb {
+    position: absolute;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    border: 2px solid #ffffff;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.75);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.sdc-cp-hue,
+.sdc-cp-alpha {
+    position: relative;
+    width: 100%;
+    height: 14px;
+    border-radius: 7px;
+    cursor: pointer;
+    touch-action: none;
+    margin-bottom: 8px;
+}
+
+.sdc-cp-hue {
+    background: linear-gradient(
+        to right,
+        #ff0000 0%,
+        #ffff00 17%,
+        #00ff00 33%,
+        #00ffff 50%,
+        #0000ff 67%,
+        #ff00ff 83%,
+        #ff0000 100%
+    );
+}
+
+.sdc-cp-alpha {
+    background-color: #cccccc;
+    background-image:
+        linear-gradient(45deg, #888888 25%, transparent 25%),
+        linear-gradient(-45deg, #888888 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #888888 75%),
+        linear-gradient(-45deg, transparent 75%, #888888 75%);
+    background-size: 8px 8px;
+    background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+}
+
+.sdc-cp-alpha-grad {
+    position: absolute;
+    inset: 0;
+    border-radius: 7px;
+}
+
+.sdc-cp-bar-thumb {
+    position: absolute;
+    top: 50%;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 1px solid rgba(0, 0, 0, 0.7);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+    transform: translate(-50%, -50%);
+    pointer-events: none;
+}
+
+.sdc-cp-footer {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 2px;
+}
+
+.sdc-cp-chip {
+    width: 18px;
+    height: 18px;
+    border-radius: 4px;
+    border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.25));
+    flex-shrink: 0;
+}
+
+.sdc-cp-readout {
+    font-family: monospace;
+    font-size: 0.8em;
+    opacity: 0.85;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 /* ============================================================
- * Send As / NPC color overrides UI
- * ============================================================ */
-.sdc-extension-settings .sdc-name-overrides-list {
-  display: flex;
-  flex-flow: column nowrap;
-  gap: 4px;
-  margin: 6px 0;
-}
-
-.sdc-extension-settings .sdc-name-overrides-empty {
-  font-size: 0.8em;
-  opacity: 0.5;
-  font-style: italic;
-  padding: 4px 0;
-}
-
-.sdc-extension-settings .sdc-name-override-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 6px;
-  border-radius: 6px;
-  background: var(--SmartThemeBlurTintColor, rgba(0, 0, 0, 0.1));
-  border: 1px solid
-    var(--SmartThemeBorderColor, rgba(100, 100, 100, 0.3));
-}
-
-.sdc-extension-settings .sdc-name-override-swatch {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-}
-
-.sdc-extension-settings .sdc-name-override-name {
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 500;
-}
-
-.sdc-extension-settings .sdc-name-override-hex {
-  font-family: monospace;
-  font-size: 0.8em;
-  opacity: 0.6;
-}
-
-.sdc-extension-settings .sdc-name-override-del {
-  flex-shrink: 0;
-  width: 24px !important;
-  min-width: 24px !important;
-  height: 24px !important;
-  padding: 0 !important;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  opacity: 0.6;
-}
-
-.sdc-extension-settings .sdc-name-override-del:hover {
-  opacity: 1;
-}
-
-.sdc-extension-settings .sdc-name-override-add {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-}
-
-.sdc-extension-settings .sdc-name-override-add input[type="text"]:first-child {
-  flex: 1;
-  min-width: 100px;
-}
-
-/* The name suggestion list is a flex child of the add-row; keep it collapsed
-   in case a theme resets the UA stylesheet's `display: none`. */
-.sdc-extension-settings .sdc-name-override-add datalist {
-  display: none;
-}
-
-.sdc-extension-settings .sdc-name-override-addbtn {
-  flex-shrink: 0;
-}
-
-/* ============================================================
- * Mobile adaptation
- * Larger touch targets + anti-zoom inputs on phones / touch devices.
+ * Mobile / Touch Adaptation
  * ============================================================ */
 @media (max-width: 768px), (pointer: coarse) {
-  /* Prevent iOS Safari from zooming when focusing text inputs. */
-  .sdc-extension-settings input[type="text"],
-  .sdc-color-override-container input[type="text"] {
-    font-size: 16px !important;
-  }
+    .sdc-color-override-container input[type="text"] {
+        font-size: 16px !important;
+        height: 34px !important;
+    }
 
-  /* The inline color row can get cramped — let controls wrap. */
-  .sdc-inline-color-row {
-    flex-wrap: wrap;
-    gap: 8px;
-  }
+    .sdc-color-swatch-btn,
+    .sdc-eyedropper-btn,
+    .sdc-reset-btn {
+        width: 34px !important;
+        min-width: 34px !important;
+        height: 34px !important;
+    }
 
-  /* Bigger preset swatches for fingers. */
-  .sdc-preset-swatch {
-    width: 26px;
-    height: 26px;
-  }
+    .sdc-picker-popover {
+        width: min(260px, calc(100vw - 16px));
+    }
 
-  .sdc-preset-swatch.selected::after {
-    font-size: 13px;
-  }
+    .sdc-cp-hue,
+    .sdc-cp-alpha {
+        height: 20px;
+        border-radius: 10px;
+    }
 
-  /* Bigger icon buttons (eyedropper / reset / delete). */
-  .sdc-eyedropper-btn,
-  .sdc-reset-btn,
-  .sdc-custom-picker-wrapper,
-  .sdc-hex-input {
-    width: 32px !important;
-    min-width: 32px !important;
-    height: 32px !important;
-  }
-
-  /* Wide enough for rgb()/hsl() notations on mobile too. */
-  .sdc-hex-input {
-    width: 130px !important;
-  }
-
-  .sdc-name-override-del {
-    width: 34px !important;
-    min-width: 34px !important;
-    height: 34px !important;
-  }
-
-  /* Stack the add-row controls on narrow screens. */
-  .sdc-name-override-add {
-    gap: 8px;
-  }
-  .sdc-name-override-add .sdc-name-override-addbtn {
-    flex: 1;
-  }
+    .sdc-cp-bar-thumb,
+    .sdc-cp-sv-thumb {
+        width: 18px;
+        height: 18px;
+    }
 }

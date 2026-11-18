@@ -1,12 +1,12 @@
 {
-    "display_name": "Palette Talk",
+    "display_name": "ST Dialogue Colorizer Mini",
     "loading_order": 100,
     "requires": [],
     "optional": [],
     "js": "index.js",
     "css": "style.css",
-    "author": "Nufahi",
-    "version": "3.0.0",
-    "homePage": "https://github.com/Nufahi/SillyTavern-Palette-Talk",
+    "author": "DanTheDannedDan",
+    "version": "1.0.0",
+    "homePage": "https://github.com/DanTheDannedDan/ST-Dialogue-Colorizer-Mini",
     "auto_update": true
 }

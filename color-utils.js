@@ -1,104 +1,351 @@
 import "./Vibrant.min.js";
-import "./color-thief.umd.js"; // Color Thief fallback for missing swatches
-import { waitForImage } from "./utils.js";
+import "./color-thief.umd.js";
 
-/** @type {VibrantConstructor} */
-export const Vibrant = window["Vibrant"];
+/** @type {any} */
+const Vibrant = window["Vibrant"];
+/** @type {any} */
 const ColorThief = window["ColorThief"];
+
+const MAX_SWATCH_CACHE = 80;
+/** @type {Map<string, Record<string, any>>} */
 const swatchCache = new Map();
+/** @type {Map<string, Promise<Record<string, any>>>} */
 const pendingSwatches = new Map();
 
+/** @type {CSSStyleDeclaration | null} */
+let colorProbeStyle = null;
+
 /**
- * RGB to HSL conversion for color classification.
- * @param {number} r - Red (0-255)
- * @param {number} g - Green (0-255)
- * @param {number} b - Blue (0-255)
- * @returns {{h: number, s: number, l: number}} HSL values (h: 0-360, s: 0-100, l: 0-100)
+ * Waits for an HTMLImageElement to finish loading.
+ * @param {HTMLImageElement} img
+ * @returns {Promise<HTMLImageElement>}
  */
-function rgbToHsl(r, g, b) {
+export function waitForImage(img) {
+    return new Promise((resolve, reject) => {
+        if (img.complete) {
+            if (img.naturalWidth > 0) {
+                resolve(img);
+            } else {
+                reject(new Error("Image failed to decode (naturalWidth === 0)."));
+            }
+            return;
+        }
+
+        const onLoad = () => {
+            cleanup();
+            resolve(img);
+        };
+        const onError = () => {
+            cleanup();
+            reject(new Error("Image failed to load."));
+        };
+        const cleanup = () => {
+            img.removeEventListener("load", onLoad);
+            img.removeEventListener("error", onError);
+        };
+
+        img.addEventListener("load", onLoad, { once: true });
+        img.addEventListener("error", onError, { once: true });
+    });
+}
+
+/**
+ * Invalidates cached swatch palettes matching a URL or filename fragment.
+ * @param {string} fragment
+ */
+export function invalidateSwatchCache(fragment) {
+    if (!fragment) return;
+    const encoded = encodeURIComponent(fragment);
+    for (const key of swatchCache.keys()) {
+        if (key.includes(fragment) || key.includes(encoded)) {
+            swatchCache.delete(key);
+        }
+    }
+}
+
+/**
+ * Converts RGB (0-255) to HSL (0-1).
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @returns {[number, number, number]}
+ */
+export function rgbToHsl(r, g, b) {
     r /= 255;
     g /= 255;
     b /= 255;
     const max = Math.max(r, g, b);
     const min = Math.min(r, g, b);
-    let h, s, l = (max + min) / 2;
+    const l = (max + min) / 2;
 
     if (max === min) {
-        h = s = 0; // achromatic
-    } else {
-        const d = max - min;
-        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-        switch (max) {
-            case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-            case g: h = ((b - r) / d + 2) / 6; break;
-            case b: h = ((r - g) / d + 4) / 6; break;
-        }
+        return [0, 0, l];
     }
 
-    return { h: h * 360, s: s * 100, l: l * 100 };
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = 0;
+
+    switch (max) {
+        case r:
+            h = (g - b) / d + (g < b ? 6 : 0);
+            break;
+        case g:
+            h = (b - r) / d + 2;
+            break;
+        case b:
+            h = (r - g) / d + 4;
+            break;
+    }
+
+    return [h / 6, s, l];
 }
 
 /**
- * Classifies a color based on Vibrant.js criteria.
- * @param {number} r - Red (0-255)
- * @param {number} g - Green (0-255)
- * @param {number} b - Blue (0-255)
- * @returns {string} Classification like "Vibrant", "DarkMuted", etc.
+ * Converts HSL (0-1) to RGB (0-255).
+ * @param {number} h
+ * @param {number} s
+ * @param {number} l
+ * @returns {[number, number, number]}
+ */
+export function hslToRgb(h, s, l) {
+    if (s === 0) {
+        const gray = Math.round(l * 255);
+        return [gray, gray, gray];
+    }
+
+    const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1 / 6) return p + (q - p) * 6 * t;
+        if (t < 1 / 2) return q;
+        if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+        return p;
+    };
+
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+
+    return [
+        Math.round(hue2rgb(p, q, h + 1 / 3) * 255),
+        Math.round(hue2rgb(p, q, h) * 255),
+        Math.round(hue2rgb(p, q, h - 1 / 3) * 255),
+    ];
+}
+
+/**
+ * Converts RGB (0-255) to HSV (h: 0-360, s: 0-1, v: 0-1).
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @returns {[number, number, number]}
+ */
+export function rgbToHsv(r, g, b) {
+    r /= 255;
+    g /= 255;
+    b /= 255;
+    const max = Math.max(r, g, b);
+    const min = Math.min(r, g, b);
+    const d = max - min;
+    const v = max;
+    const s = max === 0 ? 0 : d / max;
+
+    let h = 0;
+    if (d !== 0) {
+        switch (max) {
+            case r:
+                h = (g - b) / d + (g < b ? 6 : 0);
+                break;
+            case g:
+                h = (b - r) / d + 2;
+                break;
+            case b:
+                h = (r - g) / d + 4;
+                break;
+        }
+        h *= 60;
+    }
+
+    return [h, s, v];
+}
+
+/**
+ * Converts HSV (h: 0-360, s: 0-1, v: 0-1) to RGB (0-255).
+ * @param {number} h
+ * @param {number} s
+ * @param {number} v
+ * @returns {[number, number, number]}
+ */
+export function hsvToRgb(h, s, v) {
+    const hue = ((h % 360) + 360) % 360;
+    const c = v * s;
+    const x = c * (1 - Math.abs(((hue / 60) % 2) - 1));
+    const m = v - c;
+
+    let r1 = 0;
+    let g1 = 0;
+    let b1 = 0;
+
+    if (hue < 60) {
+        r1 = c; g1 = x;
+    } else if (hue < 120) {
+        r1 = x; g1 = c;
+    } else if (hue < 180) {
+        g1 = c; b1 = x;
+    } else if (hue < 240) {
+        g1 = x; b1 = c;
+    } else if (hue < 300) {
+        r1 = x; b1 = c;
+    } else {
+        r1 = c; b1 = x;
+    }
+
+    return [
+        Math.round((r1 + m) * 255),
+        Math.round((g1 + m) * 255),
+        Math.round((b1 + m) * 255),
+    ];
+}
+
+/**
+ * Formats RGB (0-255) as `#rrggbb`.
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @returns {string}
+ */
+export function rgbToHex(r, g, b) {
+    const hex = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, "0");
+    return `#${hex(r)}${hex(g)}${hex(b)}`;
+}
+
+/**
+ * Formats RGBA (r,g,b: 0-255, a: 0-255) to a canonical CSS string (`#rrggbb` or `rgba(...)`).
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @param {number} [a=255]
+ * @returns {string}
+ */
+export function rgbaToCssString(r, g, b, a = 255) {
+    const alpha = Math.max(0, Math.min(255, Math.round(a)));
+    if (alpha >= 255) {
+        return rgbToHex(r, g, b);
+    }
+    const alpha01 = Math.round((alpha / 255) * 100) / 100;
+    return `rgba(${Math.round(r)}, ${Math.round(g)}, ${Math.round(b)}, ${alpha01})`;
+}
+
+/**
+ * Parses any valid CSS color string into `{ r, g, b, a }` (all 0-255).
+ * Rejects empty strings and `transparent`.
+ *
+ * @param {any} input
+ * @returns {{ r: number, g: number, b: number, a: number } | null}
+ */
+export function parseCssColor(input) {
+    if (typeof input !== "string") return null;
+    const value = input.trim();
+    if (!value || value.toLowerCase() === "transparent") return null;
+
+    if (!colorProbeStyle) {
+        colorProbeStyle = document.createElement("span").style;
+    }
+
+    colorProbeStyle.color = "";
+    colorProbeStyle.color = value;
+    if (!colorProbeStyle.color) return null;
+
+    let normalized = colorProbeStyle.color;
+
+    if (/^(color|oklch|oklab|lab|lch|hwb)\(/i.test(normalized)) {
+        const probeEl = document.createElement("span");
+        probeEl.style.cssText = `color:${value};position:absolute;visibility:hidden;pointer-events:none;`;
+        (document.body || document.documentElement).appendChild(probeEl);
+        normalized = getComputedStyle(probeEl).color || normalized;
+        probeEl.remove();
+    }
+
+    const match = normalized.match(
+        /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.%]+))?\s*\)$/i
+    );
+    if (!match) return null;
+
+    const [, rStr, gStr, bStr, rawAlpha] = match;
+    let alpha = 255;
+    if (rawAlpha !== undefined) {
+        alpha = rawAlpha.endsWith("%")
+            ? (parseFloat(rawAlpha) / 100) * 255
+            : parseFloat(rawAlpha) * 255;
+    }
+
+    return {
+        r: Math.max(0, Math.min(255, Math.round(parseFloat(rStr)))),
+        g: Math.max(0, Math.min(255, Math.round(parseFloat(gStr)))),
+        b: Math.max(0, Math.min(255, Math.round(parseFloat(bStr)))),
+        a: Math.max(0, Math.min(255, Math.round(alpha))),
+    };
+}
+
+/**
+ * Normalizes any CSS color string into `#rrggbb` or `rgba(...)`, or `null` if invalid.
+ * @param {any} input
+ * @returns {string | null}
+ */
+export function normalizeCssColor(input) {
+    const parsed = parseCssColor(input);
+    return parsed ? rgbaToCssString(parsed.r, parsed.g, parsed.b, parsed.a) : null;
+}
+
+/**
+ * Classifies RGB color into a Vibrant.js swatch bucket.
+ * @param {number} r
+ * @param {number} g
+ * @param {number} b
+ * @returns {string}
  */
 function classifyColor(r, g, b) {
-    const hsl = rgbToHsl(r, g, b);
-    const saturation = hsl.s;
-    const lightness = hsl.l;
+    const [, sNorm, lNorm] = rgbToHsl(r, g, b);
+    const saturation = sNorm * 100;
+    const lightness = lNorm * 100;
 
-    const isVibrant = saturation > 40;
-    const vibrancyType = isVibrant ? 'Vibrant' : 'Muted';
-
-    let lightnessType = '';
-    if (lightness < 40) {
-        lightnessType = 'Dark';
-    } else if (lightness > 60) {
-        lightnessType = 'Light';
-    }
+    const vibrancyType = saturation > 40 ? "Vibrant" : "Muted";
+    let lightnessType = "";
+    if (lightness < 40) lightnessType = "Dark";
+    else if (lightness > 60) lightnessType = "Light";
 
     return lightnessType ? `${lightnessType}${vibrancyType}` : vibrancyType;
 }
 
 /**
- * Takes a loaded image and downscales it onto a canvas for fast color analysis.
- * @param {HTMLImageElement} image The fully loaded source image.
- * @param {number} maxDimension The maximum width or height of the scaled-down canvas.
- * @returns {HTMLCanvasElement} A canvas element containing the downscaled image.
+ * Downscales an image onto an offscreen canvas for fast color extraction.
+ * @param {HTMLImageElement} image
+ * @param {number} [maxDimension=192]
+ * @returns {HTMLCanvasElement}
  */
-function createDownscaledCanvas(image, maxDimension = 256) {
-    const canvas = document.createElement('canvas');
-    const ctx = canvas.getContext('2d');
+function createDownscaledCanvas(image, maxDimension = 192) {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
 
-    let width = image.width;
-    let height = image.height;
-
-    // Calculate the new dimensions to maintain aspect ratio
-    if (width > height) {
-        if (width > maxDimension) {
-            height *= maxDimension / width;
-            width = maxDimension;
-        }
-    } else {
-        if (height > maxDimension) {
-            width *= maxDimension / height;
-            height = maxDimension;
-        }
+    let width = image.naturalWidth || image.width;
+    let height = image.naturalHeight || image.height;
+    if (!width || !height || !ctx) {
+        throw new Error("Image has empty dimensions or 2D context unavailable.");
     }
-    
-    // Round the dimensions to the nearest whole number
-    canvas.width = Math.round(width);
-    canvas.height = Math.round(height);
 
-    // Draw the image onto the canvas, which performs the resizing
-    ctx.drawImage(image, 0, 0, width, height);
+    if (width > height && width > maxDimension) {
+        height *= maxDimension / width;
+        width = maxDimension;
+    } else if (height > maxDimension) {
+        width *= maxDimension / height;
+        height = maxDimension;
+    }
 
-    // Patch for ColorThief compatibility:
-    // ColorThief expects 'naturalWidth' and 'naturalHeight' properties which exist on Images but not Canvases.
-    // We add them manually so ColorThief can process this downscaled canvas without error.
+    canvas.width = Math.max(1, Math.round(width));
+    canvas.height = Math.max(1, Math.round(height));
+    ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    // ColorThief expects naturalWidth/naturalHeight on the element it receives.
     // @ts-ignore
     canvas.naturalWidth = canvas.width;
     // @ts-ignore
@@ -108,226 +355,190 @@ function createDownscaledCanvas(image, maxDimension = 256) {
 }
 
 /**
- * Gets a palette from Color Thief, classifies each color into a Vibrant.js category,
- * and returns a swatch object compatible with Vibrant.js.
- * @param {HTMLImageElement | HTMLCanvasElement} image The image or canvas to analyze.
- * @param {number} paletteSize The number of colors to extract.
- * @returns {Object.<string, Object>} A dictionary of classified swatches.
- * @throws {Error} If Color Thief fails to extract a palette from the image
+ * Extracts ColorThief swatches as a fallback when Vibrant misses buckets.
+ * @param {HTMLCanvasElement} canvas
+ * @param {number} [paletteSize=12]
+ * @returns {Record<string, { getRgb: () => number[], getHex: () => string }>}
  */
-function getColorThiefSwatches(image, paletteSize = 12) {
+function getColorThiefSwatches(canvas, paletteSize = 12) {
     const colorThief = new ColorThief();
-    // Extract a larger palette of colors
-    const palette = colorThief.getPalette(image, paletteSize);
-    
-    // Validate that Color Thief returned a valid palette array
-    // getPalette() can return null or false on failure
-    if (!palette || !Array.isArray(palette) || palette.length === 0) {
-        throw new Error('[SDC] Color Thief failed to extract palette from image');
+    const palette = colorThief.getPalette(canvas, paletteSize);
+    if (!Array.isArray(palette) || palette.length === 0) {
+        throw new Error("Color Thief failed to extract palette.");
     }
-    
-    const classifiedSwatches = {};
-    const usedCategories = new Set();
-    
-    // Classify each color and assign it to the first available category slot
+
+    const classified = {};
     for (const color of palette) {
-        const classification = classifyColor(color[0], color[1], color[2]);
-        
-        // Only assign if this category hasn't been filled yet
-        // This ensures the first (and likely most dominant) color for a category wins
-        if (classification && !usedCategories.has(classification)) {
-            classifiedSwatches[classification] = {
-                // Color Thief gives RGB array, so we create a mock Swatch object
+        const category = classifyColor(color[0], color[1], color[2]);
+        if (category && !classified[category]) {
+            classified[category] = {
                 getRgb: () => color,
-                getHex: () => '#' + color.map(x => {
-                    const hex = x.toString(16);
-                    return hex.length === 1 ? '0' + hex : hex;
-                }).join(''),
+                getHex: () => rgbToHex(color[0], color[1], color[2]),
             };
-            usedCategories.add(classification);
         }
     }
-    
-    return classifiedSwatches;
+    return classified;
 }
 
 /**
- * Gets swatches from an image using Vibrant.js with Color Thief fallback.
- * Caches results for performance.
+ * Extracts Vibrant + ColorThief swatches from an image, with LRU caching.
  * @param {HTMLImageElement} image
- * @returns {Promise<Object.<string, Object>>} Dictionary of swatches
+ * @returns {Promise<Record<string, any>>}
  */
 async function getSwatchesFromImage(image) {
     await waitForImage(image);
-    const cacheKey = image.src;
-    
-    // Check result cache
-    if (swatchCache.has(cacheKey)) return swatchCache.get(cacheKey);
+    const cacheKey = image.currentSrc || image.src;
 
-    // Check pending requests to avoid duplicate work
+    if (swatchCache.has(cacheKey)) {
+        return /** @type {Record<string, any>} */ (swatchCache.get(cacheKey));
+    }
     if (pendingSwatches.has(cacheKey)) {
-        return pendingSwatches.get(cacheKey);
+        return /** @type {Promise<Record<string, any>>} */ (pendingSwatches.get(cacheKey));
     }
 
-    const processPromise = (async () => {
+    const task = (async () => {
         try {
-            const imageSourceForAnalysis = createDownscaledCanvas(image);
-
-            // Get the initial results from Vibrant.js
-            // quality=64 (faster), colorCount=12 (better palette variety)
-            const vibrant = new Vibrant(imageSourceForAnalysis, 64, 12);
+            const canvas = createDownscaledCanvas(image);
+            const vibrant = new Vibrant(canvas, 64, 12);
             let swatches = vibrant.swatches();
-            
-            // Define all the swatches we absolutely require
-            const requiredSwatches = [
-                'Vibrant', 'DarkVibrant', 'LightVibrant',
-                'Muted', 'DarkMuted', 'LightMuted'
+
+            const required = [
+                "Vibrant", "DarkVibrant", "LightVibrant",
+                "Muted", "DarkMuted", "LightMuted",
             ];
 
-            // Check if any of the required swatches are missing from the result
-            const isMissingSwatches = requiredSwatches.some(swatchName => !swatches[swatchName]);
-            
-            // If ANY swatch is missing, run the Color Thief fallback to fill the gaps
-            if (isMissingSwatches) {
+            if (required.some((name) => !swatches[name])) {
                 try {
-                    // Get the classified swatches from Color Thief
-                    const colorThiefSwatches = getColorThiefSwatches(imageSourceForAnalysis, 12);
-                    
-                    // Create a new merged swatch object. Start with Vibrant.js results.
-                    const mergedSwatches = { ...swatches };
-
-                    // Intelligently fill in the blanks
-                    for (const swatchName of requiredSwatches) {
-                        // If the original swatches are missing this one,
-                        if (!mergedSwatches[swatchName] && colorThiefSwatches[swatchName]) {
-                            mergedSwatches[swatchName] = colorThiefSwatches[swatchName];
+                    const fallback = getColorThiefSwatches(canvas, 12);
+                    const merged = { ...swatches };
+                    for (const name of required) {
+                        if (!merged[name] && fallback[name]) {
+                            merged[name] = fallback[name];
                         }
                     }
-                    
-                    // The final result is the merged object
-                    swatches = mergedSwatches;
-
+                    swatches = merged;
                 } catch (err) {
-                    console.warn('[SDC] Color Thief fallback failed:', err);
+                    console.debug("[ST Dialogue Colorizer Mini] ColorThief fallback failed:", err);
                 }
             }
-            
-            swatchCache.set(cacheKey, swatches);
 
-            // Limit cache size to prevent memory issues
-            if (swatchCache.size > 50) {
-                const oldestKey = swatchCache.keys().next().value;
-                swatchCache.delete(oldestKey);
+            swatchCache.set(cacheKey, swatches);
+            if (swatchCache.size > MAX_SWATCH_CACHE) {
+                const oldest = swatchCache.keys().next().value;
+                if (oldest !== undefined) swatchCache.delete(oldest);
             }
-            
+
             return swatches;
         } finally {
-            // Always clean up pending promise
             pendingSwatches.delete(cacheKey);
         }
     })();
 
-    pendingSwatches.set(cacheKey, processPromise);
-    return processPromise;
+    pendingSwatches.set(cacheKey, task);
+    return task;
 }
 
 /**
- * Checks if a color has good quality for dialogue text.
- * Rejects colors that are too dark, too light, or too desaturated.
- * 
- * @param {[number, number, number]} rgb
+ * Filters out colors that are too dark, washed out, or grayish for dialogue text.
+ * @param {number[] | null | undefined} rgb
  * @returns {boolean}
  */
 function isColorQualityGood(rgb) {
     if (!rgb) return false;
     const [r, g, b] = rgb;
-    
-    // Calculate relative luminance
     const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    
-    // Reject if too dark or too light
-    if (luminance < 0.15 || luminance > 0.95) {
-        return false;
-    }
-    
-    // Calculate saturation
+    if (luminance < 0.15 || luminance > 0.95) return false;
+
     const max = Math.max(r, g, b) / 255;
     const min = Math.min(r, g, b) / 255;
     const saturation = max === 0 ? 0 : (max - min) / max;
-    
-    // Reject if too desaturated (grayish) - helps filter out skin tones
-    if (saturation < 0.25) {
-        return false;
-    }
-    
-    return true;
+    return saturation >= 0.25;
 }
 
 /**
- * Gets average color from all available swatches, weighted by population.
- * This favors more dominant colors in the image.
- * 
- * @param {Object.<string, Object>} swatches
- * @returns {[number, number, number]?}
+ * Population-weighted average across available swatches.
+ * @param {Record<string, any>} swatches
+ * @returns {[number, number, number] | null}
  */
 function getAverageColorFromSwatches(swatches) {
-    const validSwatches = Object.values(swatches).filter(s => s !== null && s !== undefined);
-    
-    if (validSwatches.length === 0) {
-        return null;
-    }
-    
-    let totalR = 0, totalG = 0, totalB = 0;
-    let totalPopulation = 0;
-    
-    // Weight each color by its population (how many pixels have this color)
-    for (const swatch of validSwatches) {
+    const valid = Object.values(swatches).filter(Boolean);
+    if (valid.length === 0) return null;
+
+    let totalR = 0;
+    let totalG = 0;
+    let totalB = 0;
+    let totalPop = 0;
+
+    for (const swatch of valid) {
         const [r, g, b] = swatch.getRgb();
-        const population = swatch.getPopulation ? swatch.getPopulation() : 1; // Fallback to 1 if undefined
-        
-        totalR += r * population;
-        totalG += g * population;
-        totalB += b * population;
-        totalPopulation += population;
+        const pop = swatch.getPopulation ? swatch.getPopulation() : 1;
+        totalR += r * pop;
+        totalG += g * pop;
+        totalB += b * pop;
+        totalPop += pop;
     }
-    
-    // Avoid division by zero
-    if (totalPopulation === 0) {
-        totalPopulation = 1;
-    }
-    
+
+    if (totalPop === 0) totalPop = 1;
     return [
-        Math.round(totalR / totalPopulation),
-        Math.round(totalG / totalPopulation),
-        Math.round(totalB / totalPopulation)
+        Math.round(totalR / totalPop),
+        Math.round(totalG / totalPop),
+        Math.round(totalB / totalPop),
     ];
 }
 
 /**
- * Gets the best available color from an image with smart fallback.
- * Uses Vibrant.js with Color Thief fallback for missing swatches.
- * Tries Vibrant → DarkVibrant → LightVibrant → Muted → DarkMuted → LightMuted → Average in order.
- * Filters out colors that are too dark, light, or desaturated.
- * 
+ * Extracts the best dialogue color from an avatar image using Avatar Smart logic.
  * @param {HTMLImageElement} image
- * @returns {Promise<[number, number, number]?>}
+ * @returns {Promise<[number, number, number] | null>}
  */
 export async function getSmartAvatarColor(image) {
     const swatches = await getSwatchesFromImage(image);
-    
-    // Try different swatches in order of preference, testing each for quality
-    const swatchPriority = ["Vibrant", "DarkVibrant", "LightVibrant", "Muted", "DarkMuted", "LightMuted"];
-    
-    for (const swatchName of swatchPriority) {
-        const swatch = swatches[swatchName];
+    const priority = [
+        "Vibrant",
+        "DarkVibrant",
+        "LightVibrant",
+        "Muted",
+        "DarkMuted",
+        "LightMuted",
+    ];
+
+    for (const name of priority) {
+        const swatch = swatches[name];
         if (swatch) {
             const rgb = swatch.getRgb();
             if (isColorQualityGood(rgb)) {
-                return rgb;
+                return [Math.round(rgb[0]), Math.round(rgb[1]), Math.round(rgb[2])];
             }
         }
     }
-    
-    // If no good swatch found after trying all, calculate average color from palette
+
     return getAverageColorFromSwatches(swatches);
+}
+
+/**
+ * Adjusts extracted Avatar Smart color into a readable lightness/saturation range
+ * for light or dark themes (with vibrancy boost disabled).
+ *
+ * @param {[number, number, number]} rgb
+ * @param {boolean} isLight
+ * @returns {[number, number, number]}
+ */
+export function makeBetterContrast(rgb, isLight) {
+    let [h, s, l] = rgbToHsl(rgb[0], rgb[1], rgb[2]);
+
+    if (s < 0.4) {
+        s = Math.min(s + 0.3, 0.8);
+    }
+
+    if (isLight) {
+        if (l > 0.6) l = 0.45;
+        else if (l > 0.4) l = 0.4;
+        if (l < 0.2) l = 0.25;
+    } else {
+        if (l < 0.5) l = 0.65;
+        else if (l < 0.7) l = 0.7;
+        else if (l > 0.85) l = 0.8;
+    }
+
+    return hslToRgb(h, s, l);
 }

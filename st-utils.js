@@ -1,459 +1,377 @@
-import { EventEmitter } from "../../../../lib/eventemitter.js";
 import { user_avatar } from "../../../../script.js";
 import { getContext } from "../../../extensions.js";
 import { power_user } from "../../../power-user.js";
-import { STCharacter, CharacterType } from "./STCharacter.js";
 
-//#region Events
-
-export const expEventSource = new EventEmitter();
-export const exp_event_type = {
-    /**
-     * Emitted when the character card panel is changed to a different character. 
-     * Receives an {@linkcode STCharacter} object representing the newly-selected character.
-     * @param {STCharacter} character An object representing the new character.
-     */
-    CHAR_CARD_CHANGED: "char_card_changed",
-    /**
-     * Emitted when a new persona is added to the DOM.
-     * Receives an {@linkcode STCharacter} object representing the created persona.
-     * @param {STCharacter} persona An object representing the new persona.
-     */
-    PERSONA_ADDED: "persona_added",
-    /**
-     * Emitted when a persona is removed from the DOM. 
-     * Receives an {@linkcode STCharacter} object representing the removed persona.
-     * @param {STCharacter} persona An object representing the removed persona.
-     */
-    PERSONA_REMOVED: "persona_removed",
-    /**
-     * Emitted when the user changes persona. 
-     * Receives an {@linkcode STCharacter} object representing the newly-selected persona.
-     * @param {STCharacter} persona An object representing the selected persona.
-     */
-    PERSONA_CHANGED: "persona_changed",
-    /**
-     * Emitted when a message is added to the chat.
-     * Receives the message element that was added.
-     * @param {HTMLElement} addedMessage
-     */
-    MESSAGE_ADDED: "message_added",
-    /**
-     * Emitted when a message is removed from the chat.
-     * Receives the message element that was removed.
-     * @param {HTMLElement} removedMessage
-     */
-    MESSAGE_REMOVED: "message_removed",
-    /**
-     * Emitted once the `#chat` MutationObserver has successfully attached.
-     * Lets listeners tag messages that were rendered before we were watching.
-     */
-    CHAT_OBSERVER_READY: "chat_observer_ready",
+/** @readonly */
+export const CharacterType = {
+    CHARACTER: "character",
+    PERSONA: "persona",
 };
 
-/**
- * 
- * @param {MutationRecord[]} mutationList 
- * @param {MutationObserver} observer 
- */
-function onCharCardChanged(mutationList, observer) {
-    for (const mutation of mutationList) {
-        const target = /** @type {HTMLElement} */ (mutation.target);
-
-        const avatarFilePath = target.getAttribute("value");
-        if (!avatarFilePath) {
-            continue;
-        }
-
-        // fromAvatar validates against the character list and can throw (e.g.
-        // during list init, or for a transient/unknown avatar). Swallow it so a
-        // single bad mutation doesn't spam the console or break the observer.
-        try {
-            const stChar = STCharacter.fromAvatar(CharacterType.CHARACTER, avatarFilePath);
-            expEventSource.emit(exp_event_type.CHAR_CARD_CHANGED, stChar);
-        } catch (err) {
-            console.debug("[Palette Talk] Ignoring unresolved char card change:", err);
-        }
-    }
-}
+const SYSTEM_AVATAR_MARKER = "img/five.png";
+const GENERIC_AI_AVATAR_MARKER = "img/ai4.png";
 
 /**
- * 
- * @param {MutationRecord[]} mutationList 
- * @param {MutationObserver} observer 
+ * Creates a lightweight author descriptor.
+ * @param {string} type
+ * @param {string} avatarName
+ * @param {string | null} [fallbackImgSrc=null]
  */
-function onPersonasChanged(mutationList, observer) {
-    for (const mutation of mutationList) {
-        const target = /** @type {HTMLElement} */ (mutation.target);
-        if (mutation.type === "attributes") {
-            if (!target.classList.contains("selected")) {
-                continue;
-            }
-            
-            const stChar = getSTCharFromAvatarElem(target);
-            if (!stChar) {
-                continue;
-            }
-            expEventSource.emit(exp_event_type.PERSONA_CHANGED, stChar);
-        }
-        else if (mutation.type === "childList") {
-            for (const removedNode of mutation.removedNodes) {
-                if (!(removedNode instanceof HTMLElement)) {
-                    continue;
-                }
-
-                if (!removedNode.classList.contains("avatar")) {
-                    continue;
-                }
-
-                const stChar = getSTCharFromAvatarElem(removedNode);
-                if (!stChar) {
-                    continue;
-                }
-                expEventSource.emit(exp_event_type.PERSONA_REMOVED, stChar);
-            }
-            for (const addedNode of mutation.addedNodes) {
-                if (!(addedNode instanceof HTMLElement)) {
-                    continue;
-                }
-
-                if (!addedNode.classList.contains("avatar")) {
-                    continue;
-                }
-
-                const stChar = getSTCharFromAvatarElem(addedNode);
-                if (!stChar) {
-                    continue;
-                }
-                expEventSource.emit(exp_event_type.PERSONA_ADDED, stChar);
-            }
-        }
-    }
-
-    function getSTCharFromAvatarElem(avatarElem) {
-        const avatarFilePath = avatarElem.getAttribute("imgfile");
-        if (!avatarFilePath) {
-            return null;
-        }
-
-        const avatarFileName = avatarFilePath.slice(avatarFilePath.lastIndexOf('/') + 1);
-        try {
-            return STCharacter.fromAvatar(CharacterType.PERSONA, avatarFileName);
-        } catch (err) {
-            console.debug("[Palette Talk] Ignoring unresolved persona avatar:", err);
-            return null;
-        }
-    }
-}
-
-/**
- * 
- * @param {MutationRecord[]} mutationList 
- * @param {MutationObserver} observer 
- */
-function onChatChanged(mutationList, observer) {
-    for (const mutation of mutationList) {
-        for (const removedNode of mutation.removedNodes) {
-            if (!(removedNode instanceof HTMLElement)) {
-                continue;
-            }
-            if (!removedNode.classList.contains("mes"))
-                continue;
-
-            expEventSource.emit(exp_event_type.MESSAGE_REMOVED, removedNode);
-        }
-        
-        for (const addedNode of mutation.addedNodes) {
-            if (!(addedNode instanceof HTMLElement)) {
-                continue;
-            }
-            if (!addedNode.classList.contains("mes"))
-                continue;
-
-            expEventSource.emit(exp_event_type.MESSAGE_ADDED, addedNode);
-        }
-    }
-}
-
-// Track every observer we create so they can be torn down on hot-reload.
-/** @type {MutationObserver[]} */
-const stObservers = [];
-
-/** @type {number[]} Pending retry timers, cleared on dispose. */
-const stRetryTimers = [];
-
-/**
- * Safely observes a target, retrying until the node exists.
- *
- * This module is evaluated at import time, which can happen well before
- * SillyTavern has finished building its DOM (`#chat`, `#form_create`,
- * `#user_avatar_block` are all created lazily). The previous implementation
- * bailed out permanently on the first miss, which silently disabled message
- * tagging — and with it the whole name-based ("Send As" NPC) colouring path.
- *
- * We now poll on a bounded schedule and only give up after `maxAttempts`.
- *
- * @param {string} elementId
- * @param {MutationCallback} callback
- * @param {MutationObserverInit} config
- * @param {(el: HTMLElement) => (Element | null)} [resolveTarget]
- * @param {(target: Element) => void} [onAttached] Called once the observer is live.
- */
-function safeObserve(elementId, callback, config, resolveTarget, onAttached) {
-    const intervalMs = 250;
-    const maxAttempts = 120; // ~30s — generous enough for a slow first paint.
-    let attempts = 0;
-
-    const attempt = () => {
-        attempts++;
-        const root = document.getElementById(elementId);
-        const target = root ? (resolveTarget ? resolveTarget(root) : root) : null;
-
-        if (target) {
-            const observer = new MutationObserver(callback);
-            observer.observe(target, config);
-            stObservers.push(observer);
-            try {
-                onAttached?.(target);
-            } catch (err) {
-                console.warn(`[Palette Talk] onAttached handler for '#${elementId}' failed:`, err);
-            }
-            return;
-        }
-
-        if (attempts >= maxAttempts) {
-            console.warn(`[Palette Talk] Element '#${elementId}' never appeared; related updates disabled.`);
-            return;
-        }
-
-        stRetryTimers.push(window.setTimeout(attempt, intervalMs));
+export function makeAuthor(type, avatarName, fallbackImgSrc = null) {
+    return {
+        type,
+        avatarName,
+        uid: `${type}|${avatarName}`,
+        fallbackImgSrc,
     };
-
-    attempt();
 }
 
-//#region charCardChanged
-safeObserve(
-    "form_create",
-    onCharCardChanged,
-    { attributeFilter: ["value"] },
-    (form) => form.querySelector("input#avatar_url_pole")
-);
-//#endregion
-
-//#region personaChanged
-safeObserve(
-    "user_avatar_block",
-    onPersonasChanged,
-    { subtree: true, attributeFilter: ["class"], childList: true }
-);
-//#endregion
-
-//#region chatChanged
-safeObserve("chat", onChatChanged, { childList: true }, undefined, () => {
-    // The chat node may have appeared with messages already rendered (late
-    // attach, or a chat restored on startup). Announce readiness so listeners
-    // can tag whatever is already on screen.
-    expEventSource.emit(exp_event_type.CHAT_OBSERVER_READY);
-});
-//#endregion
-
 /**
- * Disconnects all internal MutationObservers. Called on hot-reload/dispose so
- * a re-install without a full page reload doesn't leave stale observers running.
- */
-export function disposeStObservers() {
-    for (const timerId of stRetryTimers.splice(0)) {
-        clearTimeout(timerId);
-    }
-
-    for (const observer of stObservers) {
-        try {
-            observer.disconnect();
-        } catch (_) {
-            /* noop */
-        }
-    }
-    stObservers.length = 0;
-}
-
-//#endregion Events
-
-/**
- * Returns a value indicating whether the user is currently in any chat.
- * 
+ * Safely checks whether a character index is present (handles index 0 properly).
+ * @param {any} id
  * @returns {boolean}
  */
-export function isInAnyChat() {
-    return isInCharacterChat() || isInGroupChat();
+function hasCharacterId(id) {
+    return id !== undefined && id !== null && id !== "";
 }
 
 /**
- * Returns a value indicating whether the user is currently in a user-to-character chat.
- * 
+ * Returns whether the user is currently in a 1-on-1 character chat.
  * @returns {boolean}
  */
 export function isInCharacterChat() {
-    // NB: characterId can legitimately be 0 (the first character), so a plain
-    // truthiness check would wrongly report "no chat" for that character.
-    const characterId = getContext().characterId;
-    return characterId !== undefined && characterId !== null && characterId !== "";
+    return hasCharacterId(getContext().characterId);
 }
 
 /**
- * Returns a value indicating whether the user is currently in a group chat.
- * 
+ * Returns whether the user is currently in a group chat.
  * @returns {boolean}
  */
 export function isInGroupChat() {
-    return !!getContext().groupId;
+    return Boolean(getContext().groupId);
 }
 
 /**
- * Gets all characters as a list of {@linkcode STCharacter} objects.
- * 
- * @returns {STCharacter[]}
- */
-export function getAllCharacters() {
-    return Object.values(getContext().characters).map(
-        (char) => STCharacter.fromAvatar(CharacterType.CHARACTER, char.avatar)
-    );
-}
-
-/**
- * Gets all of the user's personas as a list of {@linkcode STCharacter} objects.
- * 
- * @returns {STCharacter[]}
- */
-export function getAllPersonas() {
-    return Object.entries(power_user.personas).map(
-        ([avatarId, name]) => STCharacter.fromAvatar(CharacterType.PERSONA, avatarId)
-    );
-}
-
-/**
- * Gets the user's currently selected persona.
- * @returns {STCharacter}
- */
-export function getCurrentPersona() {
-    return STCharacter.fromAvatar(CharacterType.PERSONA, user_avatar);
-}
-
-/**
- * Gets the current chat character as an {@linkcode STCharacter}.
- * 
- * @returns {STCharacter?} The current character, or `null` if not currently in a user-to-character chat.
+ * Returns the active chat character, or null if not in a 1-on-1 chat.
  */
 export function getCurrentCharacter() {
-    const stContext = getContext();
-    const currCharIndex = stContext.characterId;
-    // characterId can be 0, so check for absence explicitly rather than falsiness.
-    if (currCharIndex === undefined || currCharIndex === null || currCharIndex === "")
-        return null;
-
-    const character = stContext.characters[currCharIndex];
-    if (!character)
-        return null;
-
-    return STCharacter.fromAvatar(CharacterType.CHARACTER, character.avatar);
+    const ctx = getContext();
+    if (!hasCharacterId(ctx.characterId)) return null;
+    const ch = ctx.characters?.[ctx.characterId];
+    return ch?.avatar ? makeAuthor(CharacterType.CHARACTER, ch.avatar) : null;
 }
 
 /**
- * Gets the character members in the current group chat as a list of {@linkcode STCharacter} objects.
- * 
- * @returns {STCharacter[]?} An array containing the characters in the current group chat, or `null` if not currently in a group chat.
+ * Returns the members of the current group chat, or an empty array.
  */
 export function getCurrentGroupCharacters() {
-    const stContext = getContext();
-    const currGroupId = stContext.groupId;
-    if (!currGroupId)
-        return null;
+    const ctx = getContext();
+    if (!ctx.groupId) return [];
+    const group = ctx.groups?.find((g) => g.id === ctx.groupId);
+    if (!group || !Array.isArray(group.members)) return [];
 
-    const currGroup = stContext.groups.find(group => group.id === currGroupId);
-    if (!currGroup)
-        return null;
-
-    return currGroup.members
-        .map(charAvatar => {
-            try {
-                return STCharacter.fromAvatar(CharacterType.CHARACTER, charAvatar);
-            } catch (err) {
-                console.debug("[Palette Talk] Skipping unresolved group member:", charAvatar, err);
-                return null;
-            }
-        })
-        .filter(Boolean);
+    const out = [];
+    for (const avatar of group.members) {
+        if (avatar) {
+            out.push(makeAuthor(CharacterType.CHARACTER, avatar));
+        }
+    }
+    return out;
 }
 
 /**
- * Gets the character that is currently being or was last edited. This is not necessarily the current character,
- * as a character's card can be edited from a group chat.
- * 
- * @returns {STCharacter?}
+ * Returns all defined user personas.
+ */
+export function getAllPersonas() {
+    const personas = power_user?.personas ?? {};
+    return Object.keys(personas)
+        .filter(Boolean)
+        .map((avatarId) => makeAuthor(CharacterType.PERSONA, avatarId));
+}
+
+/**
+ * Returns the currently active persona.
+ */
+export function getCurrentPersona() {
+    const personas = power_user?.personas ?? {};
+    if (user_avatar && (user_avatar in personas || typeof user_avatar === "string")) {
+        if (user_avatar in personas) {
+            return makeAuthor(CharacterType.PERSONA, user_avatar);
+        }
+    }
+
+    const selectedEl = document.querySelector("#user_avatar_block .avatar.selected[imgfile]");
+    const imgfile = selectedEl?.getAttribute("imgfile");
+    if (imgfile) {
+        const clean = imgfile.slice(imgfile.lastIndexOf("/") + 1);
+        if (clean) return makeAuthor(CharacterType.PERSONA, clean);
+    }
+
+    return user_avatar ? makeAuthor(CharacterType.PERSONA, user_avatar) : null;
+}
+
+/**
+ * Returns the character currently open in the Character Editor (`#form_create`), or null.
  */
 export function getCharacterBeingEdited() {
-    // Resolve lazily: the element may not exist at module-load time, and looking
-    // it up on demand avoids a hard dependency during initialization.
-    const avatarUrlPole = document.getElementById("avatar_url_pole");
-    const avatar = avatarUrlPole?.getAttribute("value");
-    if (!avatar) {
-        return null;
-    }
-    return STCharacter.fromAvatar(CharacterType.CHARACTER, avatar);
+    const pole = /** @type {HTMLInputElement | null} */ (
+        document.getElementById("avatar_url_pole")
+    );
+    const avatar = (pole?.getAttribute("value") || pole?.value || "").trim();
+    if (!avatar) return null;
+
+    const ctx = getContext();
+    const exists = Array.isArray(ctx.characters)
+        ? ctx.characters.some((c) => c?.avatar === avatar)
+        : true;
+    return exists ? makeAuthor(CharacterType.CHARACTER, avatar) : null;
 }
 
 /**
- * Gets the author of the given message as an {@link STCharacter}.
- * 
- * @param {HTMLElement} message 
- * @returns {STCharacter?} The author of the message, or `null` if the author couldn't be determined.
+ * Builds candidate URLs to load an avatar thumbnail, prioritizing TauriTavern's
+ * host thumbnail helper when present and falling back cleanly to SillyTavern routes.
+ *
+ * @param {string} type
+ * @param {string} avatarName
+ * @param {string | null} [fallbackImgSrc=null]
+ * @returns {string[]}
  */
-export function getMessageAuthor(message) {
-    /** @type {HTMLImageElement} */
-    const avatarThumbImg = message.querySelector(".mesAvatarWrapper > .avatar > img");
-    if (!avatarThumbImg) {
-        return null;
+export function getAvatarCandidateUrls(type, avatarName, fallbackImgSrc = null) {
+    /** @type {string[]} */
+    const urls = [];
+    const ttKind = type === CharacterType.PERSONA ? "persona" : "avatar";
+    const win = /** @type {any} */ (window);
+
+    try {
+        if (typeof win.__TAURITAVERN__?.assets?.thumbnailUrl === "function") {
+            const u = win.__TAURITAVERN__.assets.thumbnailUrl(ttKind, avatarName);
+            if (u) urls.push(u);
+        } else if (typeof win.__TAURITAVERN_THUMBNAIL__ === "function") {
+            const u = win.__TAURITAVERN_THUMBNAIL__(ttKind, avatarName);
+            if (u) urls.push(u);
+        }
+    } catch (_) {
+        /* ignore host thumbnail errors and use standard fallback routes */
     }
-    const avatarThumbSrc = avatarThumbImg.getAttribute("src");
 
-    const isUser = message.getAttribute("is_user") === "true";
-    // workaround for bug(?) in ST ('/sys {msg}' does not set 'is_system' attr to 'true')
-    const isSystem = message.getAttribute("is_system") === "true" || avatarThumbSrc === STCharacter.System.avatarImageThumbnailFilePath;
+    const encoded = encodeURIComponent(avatarName);
+    if (type === CharacterType.CHARACTER) {
+        urls.push(`/thumbnail?type=avatar&file=${encoded}`);
+        urls.push(`/characters/${encoded}`);
+    } else if (type === CharacterType.PERSONA) {
+        urls.push(`/User Avatars/${encoded}`);
+        urls.push(`/thumbnail?type=persona&file=${encoded}`);
+    }
 
-    /** @type {CharacterType} */
-    let charType;
-    if (isUser)
-        charType = CharacterType.PERSONA;
-    else if (isSystem)
-        charType = CharacterType.SYSTEM;
-    else
-        charType = CharacterType.CHARACTER;
+    if (
+        fallbackImgSrc &&
+        !fallbackImgSrc.endsWith(SYSTEM_AVATAR_MARKER) &&
+        !fallbackImgSrc.endsWith(GENERIC_AI_AVATAR_MARKER)
+    ) {
+        urls.push(fallbackImgSrc);
+    }
 
-    const avatarFileName = getAvatarFileNameFromImgSrc(charType, avatarThumbSrc);
-    return STCharacter.fromAvatar(charType, avatarFileName);
+    return [...new Set(urls.filter(Boolean))];
 }
 
 /**
- * @param {CharacterType} charType
- * @param {string} imageSrc
- * @returns {string?}
+ * Extracts a `{ type, file }` hint from any SillyTavern / TauriTavern avatar img src.
+ * @param {string} src
+ * @param {boolean} isUser
+ * @returns {{ type: string, file: string } | null}
  */
-function getAvatarFileNameFromImgSrc(charType, imageSrc) {
-    let split = imageSrc.split('/').pop();
-    switch (charType) {
-        case CharacterType.CHARACTER:
-            const charThumbRegexp = /\?type=avatar&file=(.*)/i;
-            const charMatch = split.match(charThumbRegexp)?.at(1);
-            return charMatch ? decodeURIComponent(charMatch) : split;
-        case CharacterType.PERSONA:
-            // TODO: Needs uri decode?
-            const userThumbRegexp = /\?type=persona&file=(.*)/i;
-            const userMatch = split.match(userThumbRegexp)?.at(1);
-            return userMatch ? decodeURIComponent(userMatch) : split;
-            // It turns out, this did in fact need a uri decode
-        case CharacterType.SYSTEM:
-            return imageSrc;
-        default:
-            return null;
+function parseAvatarSrc(src, isUser) {
+    if (!src) return null;
+    if (src.endsWith(SYSTEM_AVATAR_MARKER) || src.endsWith(GENERIC_AI_AVATAR_MARKER)) {
+        return null;
     }
+
+    try {
+        const parsed = new URL(src, window.location.origin);
+        const paramFile = parsed.searchParams.get("file");
+        const paramType = parsed.searchParams.get("type");
+
+        if (paramFile) {
+            const type =
+                paramType === "persona" || isUser
+                    ? CharacterType.PERSONA
+                    : CharacterType.CHARACTER;
+            return { type, file: safeDecode(paramFile) };
+        }
+
+        const path = parsed.pathname;
+        if (path.includes("/User Avatars/") || path.includes("/User%20Avatars/")) {
+            const idx = path.lastIndexOf("/");
+            const file = safeDecode(path.slice(idx + 1));
+            return file ? { type: CharacterType.PERSONA, file } : null;
+        }
+        if (path.includes("/characters/")) {
+            const idx = path.lastIndexOf("/");
+            const file = safeDecode(path.slice(idx + 1));
+            return file ? { type: CharacterType.CHARACTER, file } : null;
+        }
+
+        const lastSeg = safeDecode(path.slice(path.lastIndexOf("/") + 1));
+        if (lastSeg && !lastSeg.startsWith("five.") && !lastSeg.startsWith("ai4.")) {
+            return {
+                type: isUser ? CharacterType.PERSONA : CharacterType.CHARACTER,
+                file: lastSeg,
+            };
+        }
+    } catch (_) {
+        /* ignore malformed URL */
+    }
+
+    return null;
+}
+
+/**
+ * Decodes URI components cleanly without throwing on stray `%` characters.
+ * @param {string} value
+ * @returns {string}
+ */
+function safeDecode(value) {
+    try {
+        return decodeURIComponent(value);
+    } catch (_) {
+        return value;
+    }
+}
+
+/**
+ * Matches a display name against defined personas.
+ * @param {string} name
+ * @returns {string | null}
+ */
+function findPersonaByName(name) {
+    if (!name) return null;
+    const personas = power_user?.personas;
+    if (!personas) return null;
+    for (const [avatarId, personaName] of Object.entries(personas)) {
+        if (personaName === name) return avatarId;
+    }
+    return null;
+}
+
+/**
+ * Resolves the author of a `.mes` element across SillyTavern & TauriTavern.
+ * Handles:
+ *  - Normal 1-on-1 & group chat messages (via `chat[mesid].original_avatar`)
+ *  - TauriTavern `/thumbnail` & original-image URLs
+ *  - "Hide from AI" messages (`is_system="true"` with a character/persona avatar)
+ *  - Streaming placeholders before `original_avatar` or `img.src` settles
+ *
+ * Returns `null` for genuine System messages (`img/five.png`) without throwing.
+ *
+ * @param {HTMLElement} messageEl
+ */
+export function resolveMessageAuthor(messageEl) {
+    const imgEl = /** @type {HTMLImageElement | null} */ (
+        messageEl.querySelector(".mesAvatarWrapper > .avatar > img, .avatar > img")
+    );
+    const imgSrc = imgEl?.getAttribute("src") || "";
+
+    // True system/narrator avatar -> leave uncolored cleanly.
+    if (imgSrc && (imgSrc === SYSTEM_AVATAR_MARKER || imgSrc.endsWith("/" + SYSTEM_AVATAR_MARKER))) {
+        return null;
+    }
+
+    const ctx = getContext();
+    const mesIdAttr = messageEl.getAttribute("mesid");
+    const mesIndex = mesIdAttr !== null && mesIdAttr !== "" ? Number(mesIdAttr) : NaN;
+    const mes = Number.isInteger(mesIndex) && Array.isArray(ctx.chat) ? ctx.chat[mesIndex] : null;
+
+    if (mes?.force_avatar && (mes.force_avatar === SYSTEM_AVATAR_MARKER || mes.force_avatar.endsWith("/" + SYSTEM_AVATAR_MARKER))) {
+        return null;
+    }
+
+    const isUser =
+        mes?.is_user !== undefined
+            ? Boolean(mes.is_user)
+            : messageEl.getAttribute("is_user") === "true";
+
+    const chName = (
+        mes?.name ||
+        messageEl.getAttribute("ch_name") ||
+        messageEl.querySelector(".name_text")?.textContent ||
+        ""
+    ).trim();
+
+    const isTrueSystem =
+        (mes?.is_system || messageEl.getAttribute("is_system") === "true") &&
+        chName === "System" &&
+        !mes?.original_avatar;
+
+    if (isTrueSystem) {
+        return null;
+    }
+
+    // 1. Canonical chat model fields (immune to thumbnail URL rewrites)
+    if (!isUser && mes?.original_avatar) {
+        return makeAuthor(CharacterType.CHARACTER, mes.original_avatar, imgSrc || null);
+    }
+
+    if (isUser) {
+        const fromForce = mes?.force_avatar ? parseAvatarSrc(mes.force_avatar, true) : null;
+        if (fromForce) {
+            return makeAuthor(CharacterType.PERSONA, fromForce.file, imgSrc || null);
+        }
+
+        const fromSrc = parseAvatarSrc(imgSrc, true);
+        if (fromSrc) {
+            return makeAuthor(CharacterType.PERSONA, fromSrc.file, imgSrc || null);
+        }
+
+        const byName = findPersonaByName(chName);
+        if (byName) {
+            return makeAuthor(CharacterType.PERSONA, byName, imgSrc || null);
+        }
+
+        if (user_avatar) {
+            return makeAuthor(CharacterType.PERSONA, user_avatar, imgSrc || null);
+        }
+        return null;
+    }
+
+    // 2. Parse <img src> (handles /thumbnail?type=avatar&file=..., /characters/..., etc.)
+    const fromForce = mes?.force_avatar ? parseAvatarSrc(mes.force_avatar, false) : null;
+    if (fromForce) {
+        return makeAuthor(fromForce.type, fromForce.file, imgSrc || null);
+    }
+
+    const fromSrc = parseAvatarSrc(imgSrc, false);
+    if (fromSrc) {
+        return makeAuthor(fromSrc.type, fromSrc.file, imgSrc || null);
+    }
+
+    // 3. Single-character chat fallback (useful during early streaming before avatar src renders)
+    if (!ctx.groupId && hasCharacterId(ctx.characterId)) {
+        const currChar = ctx.characters?.[ctx.characterId];
+        if (currChar?.avatar && (!chName || chName === currChar.name)) {
+            return makeAuthor(CharacterType.CHARACTER, currChar.avatar, imgSrc || null);
+        }
+    }
+
+    // 4. Group chat / name fallback
+    if (chName) {
+        if (ctx.groupId && Array.isArray(ctx.groups)) {
+            const group = ctx.groups.find((g) => g.id === ctx.groupId);
+            if (group?.members && Array.isArray(ctx.characters)) {
+                for (const avatar of group.members) {
+                    const memberChar = ctx.characters.find((c) => c?.avatar === avatar);
+                    if (memberChar?.name === chName) {
+                        return makeAuthor(CharacterType.CHARACTER, memberChar.avatar, imgSrc || null);
+                    }
+                }
+            }
+        }
+        const byCharName = Array.isArray(ctx.characters)
+            ? ctx.characters.find((c) => c?.name === chName)
+            : null;
+        if (byCharName?.avatar) {
+            return makeAuthor(CharacterType.CHARACTER, byCharName.avatar, imgSrc || null);
+        }
+    }
+
+    return null;
 }
