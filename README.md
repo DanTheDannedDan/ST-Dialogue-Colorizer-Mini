@@ -1,113 +1,79 @@
-# Palette Talk
+# ST Dialogue Colorizer Mini
 
-A SillyTavern extension that automatically colors dialogue quotes based on character avatars, with intelligent color extraction, quality filtering, an eyedropper, live preview and per-name NPC colors.
+A lightweight, zero-bloat SillyTavern extension that automatically colors dialogue quotes and speaker names using each character's and persona's avatar palette.
 
-> **Palette Talk is a fork** of [b4bysw0rld/SillyTavern-Smart-Dialogue-Colorizer](https://github.com/b4bysw0rld/SillyTavern-Smart-Dialogue-Colorizer) with several new features added (eyedropper, live preview, Send-As/NPC colors, mobile support). See [CHANGES.md](CHANGES.md) for the full list.
+No settings panel, no unnecessary menus, and zero lag.
 
-## 🆕 What's new in this fork
-- **Eyedropper / pipette** — pick a dialogue color straight from a character's avatar (native `EyeDropper` API, with a click-on-avatar fallback).
-- **Live preview** — see a sample quote in the chosen color before saving.
-- **Send As / NPC colors** — color NPC dialogue by name, even via "Send As" (fixes upstream Issue #1).
-- **Mobile-friendly** — larger touch targets and anti-zoom inputs.
-- **Settings live in the Extensions panel** (no redundant wand-menu button).
+---
 
-## ✨ Features
+## ⚡ Key Highlights
 
-### Smart Color Extraction
-- **Intelligent Fallback System**: Automatically tries multiple color extraction methods in order:
-  - Vibrant colors (for colorful, eye-catching avatars)
-  - Dark/Light Vibrant variants
-  - Muted colors (for subtle avatars)
-  - Average palette color (as final fallback)
-- **Quality Filtering**: Automatically rejects colors that are too dark, too light, or too desaturated
-- **Enhanced Contrast**: Optimizes colors for readability on dark backgrounds
+- **Zero Settings Menu**: Out of the box, it uses Avatar Smart extraction, colors quotes and speaker names, and respects natural theme tones without requiring setup or configuration drawers.
+- **Reliable Manual Overrides**: Fine-tune colors directly inside the Character Editor (`Dialogue Color`) or Persona Management. Clear the field or click the reset button (`↺`) at any time to return to auto-detection.
+- **Built for Speed & Stability**:
+  - Fully handles **streamed generation**, non-streamed input, and message editing without drops or stalls.
+  - Zero token-stream overhead—avoids deep subtree scanning and updates CSS custom properties via `requestAnimationFrame`.
+  - Zero lag when dragging the color picker, even across long chats.
+  - Completely removed CSS transitions and animations for instant, crisp rendering.
+- **First-Class TauriTavern Support**:
+  - Replaces fragile native color inputs with an integrated, in-WebView pointer-driven color picker popover that works across WKWebView (macOS/iOS), WebKitGTK (Linux), Android WebView, and Windows WebView2.
+  - Supports `/thumbnail` routes, original images, and custom host asset endpoints without path-decoding failures.
+- **Eyedropper Tool**: Samples any color directly from the screen (Chromium) or by clicking an avatar image (TauriTavern / Safari / Firefox).
 
-### Customization Options
-- **Character Colors**: Separate settings for characters and user personas
-- **Color Sources**:
-  - Avatar Smart (recommended) - Intelligent extraction with fallbacks
-  - Static Color - Use the same color for all
-  - Per-Character Override - Set custom colors for specific characters
-  - Disabled - Turn off auto-coloring
-- **Per-Character Overrides**: Set specific colors for individual characters in their character editor
-- **Global Color Adjustments**: Fine-tune all avatar-extracted colors with:
-  - Saturation boost (0-10) - Increase color vibrancy
-  - Brightness boost (0-10) - Make colors brighter
-- **Character Name Coloring**: Optionally apply colors to character names in addition to dialogue quotes
+---
 
-### CSS Variable Support
-Assigns character colors to a CSS variable `--character-color` scoped to message elements for use in custom CSS:
+## 🎨 How It Works
 
-```css
-/* Example: Color avatar borders */
-div.mes .mesAvatarWrapper .avatar {
-    outline: 1px solid var(--character-color);
-    box-shadow: 0px 0px 2px 1px rgb(from var(--character-color) r g b / 80%);
-}
+1. **Avatar Smart Extraction**: Scans the avatar image through Vibrant.js and Color Thief fallbacks, filtering out muddy, pitch-black, or washed-out shades to pick the best dialogue color.
+2. **Applied Automatically**:
+   - Dialogue quotes (`<q>`) are colored automatically.
+   - Character and persona display names (`.name_text`) match their dialogue color.
+3. **Manual Overrides**:
+   - Open the **Character Editor** or **Persona Management** drawer.
+   - Enter any CSS color (`#rrggbb`, `rgb()`, `hsl()`, or named colors), click the custom swatch to use the built-in color picker, or click the **Eyedropper** (`🖌`) to sample a color from an avatar.
+   - Click the **Reset** button (`↺`) or clear the input to restore automatic avatar detection.
 
-/* Example: Color message metadata */
-div.mes .mesIDDisplay:not(:empty) {
-    outline: 1px solid var(--character-color);
-    background-color: rgba(20, 20, 20, 0.7);
-}
-```
+---
 
 ## 📦 Installation
 
-1. Open SillyTavern
-2. Go to **Extensions** → **Install Extension**
-3. Enter this repository's URL
-4. Click **Save**
+### Method 1: SillyTavern Extension Installer (Recommended)
+1. In SillyTavern, open the **Extensions** menu (stacked blocks icon).
+2. Click **Install Extension**.
+3. Paste the repository URL:
+   ```
+   https://github.com/DanTheDannedDan/ST-Dialogue-Colorizer-Mini
+   ```
+4. Click **Save**.
 
-Alternatively, manually place the extension folder in:
+### Method 2: Manual Clone
+Clone or extract the repository directly into your SillyTavern installation:
+```bash
+cd SillyTavern/public/scripts/extensions/third-party/
+git clone https://github.com/DanTheDannedDan/ST-Dialogue-Colorizer-Mini.git
 ```
-SillyTavern/public/scripts/extensions/third-party/SillyTavern-Palette-Talk/
+
+---
+
+## 🎯 CSS Styling Hook
+
+The extension assigns the resolved color to `--sdc-color` scoped to each message element. You can use this variable in your custom themes or user styles:
+
+```css
+/* Example: Match avatar border to dialogue color */
+.mes[data-sdc-uid] .mesAvatarWrapper .avatar {
+    outline: 1px solid var(--sdc-color);
+}
+
+/* Example: Accentuate the message header */
+.mes[data-sdc-uid] .ch_name {
+    border-left: 2px solid var(--sdc-color);
+    padding-left: 6px;
+}
 ```
 
-## 🎨 Usage
-
-1. Open **Extensions** panel in SillyTavern
-2. Find **Palette Talk** settings
-3. Configure:
-   - **Character Dialogue Settings**: How character quotes are colored
-   - **Persona Dialogue Settings**: How your persona's quotes are colored
-4. Set per-character overrides in the Character Editor (optional)
-
-## 🔧 Configuration
-
-### Color Source Options
-
-- **Avatar Smart** (Default): Uses intelligent color extraction with quality filtering
-- **Static Color**: Specify a single color to use for all characters
-- **Per-Character Only**: Only uses colors set per-character, uses default for others
-- **Disabled**: Turn off automatic coloring
-
-### Per-Character Colors
-
-In the Character Editor or Persona settings, you'll find a "Dialogue Color" field where you can set custom colors for specific characters, overriding the global settings.
-
-You can set the color in three ways:
-- **Preset swatches** — click one of the quick color dots.
-- **Hex / color picker** — type a `#RRGGBB` value or use the native color box.
-- **Eyedropper** 🩹 — click the eyedropper button to sample a color straight from the avatar (or anywhere on screen in supported browsers).
-
-A **live preview** shows a sample quote in the chosen color so you can check readability before saving.
-
-### Send As / NPC Colors
-
-If you use **"Send As"** to voice NPCs (instead of group chats), those messages have no avatar to extract a color from. In the **Send As / NPC Colors** section of the settings panel you can map a character *name* to a color, and matching messages will be colored by name.
-
-## 🆚 Improvements Over Original
-
-- Eyedropper to pick colors from avatars
-- Live dialogue color preview
-- Send As / NPC coloring by name
-- Mobile-friendly UI (larger touch targets, anti-zoom inputs)
-- Hot-reload safe (no duplicate buttons/observers on update)
-- More reliable color extraction that works with a wider variety of avatars
-- Smart fallback system prevents failures when vibrant colors aren't available
-- Better contrast algorithm ensures readability
+---
 
 ## 📝 License
 
-MIT License - see [LICENSE](./LICENSE)
+MIT License. See [LICENSE](./LICENSE) for details.
