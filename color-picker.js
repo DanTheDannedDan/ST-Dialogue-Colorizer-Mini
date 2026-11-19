@@ -12,6 +12,14 @@ let activeCloseFn = null;
 let activeAnchor = null;
 
 /**
+ * Whether a color picker popover is currently open.
+ * @returns {boolean}
+ */
+export function isColorPickerOpen() {
+    return activeCloseFn !== null;
+}
+
+/**
  * Closes any currently open color picker popover.
  */
 export function closeColorPickerPopover() {
@@ -21,6 +29,32 @@ export function closeColorPickerPopover() {
         activeAnchor = null;
         fn();
     }
+}
+
+/**
+ * Returns visible viewport bounds factoring in `window.visualViewport` (mobile keyboard / pinch)
+ * and TauriTavern safe-area inset CSS variables when present.
+ */
+function getSafeViewportBounds() {
+    const vv = window.visualViewport;
+    const vw = vv ? vv.width : window.innerWidth;
+    const vh = vv ? vv.height : window.innerHeight;
+    const offsetLeft = vv ? vv.offsetLeft : 0;
+    const offsetTop = vv ? vv.offsetTop : 0;
+
+    const rootStyle = getComputedStyle(document.documentElement);
+    const readInset = (name) => {
+        const raw = parseFloat(rootStyle.getPropertyValue(name));
+        return Number.isFinite(raw) && raw > 0 ? raw : 0;
+    };
+
+    const margin = 8;
+    return {
+        left: offsetLeft + Math.max(margin, readInset("--tt-inset-left")),
+        top: offsetTop + Math.max(margin, readInset("--tt-inset-top")),
+        right: offsetLeft + vw - Math.max(margin, readInset("--tt-inset-right")),
+        bottom: offsetTop + vh - Math.max(margin, readInset("--tt-inset-bottom")),
+    };
 }
 
 /**
@@ -58,6 +92,7 @@ export function openColorPickerPopover({
     let dirty = false;
     let rafId = 0;
     let pendingCss = "";
+    let closed = false;
 
     const popover = document.createElement("div");
     popover.className = "sdc-picker-popover";
@@ -133,7 +168,9 @@ export function openColorPickerPopover({
         if (!rafId) {
             rafId = requestAnimationFrame(() => {
                 rafId = 0;
-                onInput(pendingCss);
+                if (!closed) {
+                    onInput(pendingCss);
+                }
             });
         }
     }
@@ -152,27 +189,33 @@ export function openColorPickerPopover({
     }
 
     function positionPopover() {
-        if (!document.body.contains(anchor)) {
+        if (closed) return;
+        if (!anchor.isConnected) {
             closeColorPickerPopover();
             return;
         }
         const rect = anchor.getBoundingClientRect();
+        if (rect.width === 0 && rect.height === 0) {
+            closeColorPickerPopover();
+            return;
+        }
+
+        const bounds = getSafeViewportBounds();
         const popW = popover.offsetWidth || 224;
         const popH = popover.offsetHeight || 220;
-        const margin = 8;
-        const vw = window.innerWidth;
-        const vh = window.innerHeight;
 
         let left = rect.left;
-        if (left + popW > vw - margin) {
-            left = vw - popW - margin;
+        if (left + popW > bounds.right) {
+            left = bounds.right - popW;
         }
-        left = Math.max(margin, left);
+        left = Math.max(bounds.left, left);
 
         let top = rect.bottom + 6;
-        if (top + popH > vh - margin) {
+        if (top + popH > bounds.bottom) {
             const aboveTop = rect.top - popH - 6;
-            top = aboveTop >= margin ? aboveTop : Math.max(margin, vh - popH - margin);
+            top = aboveTop >= bounds.top
+                ? aboveTop
+                : Math.max(bounds.top, bounds.bottom - popH);
         }
 
         popover.style.left = `${Math.round(left)}px`;
@@ -200,7 +243,11 @@ export function openColorPickerPopover({
             if (e.button !== 0 && e.pointerType === "mouse") return;
             e.preventDefault();
             dragging = true;
-            surface.setPointerCapture?.(e.pointerId);
+            try {
+                surface.setPointerCapture?.(e.pointerId);
+            } catch (_) {
+                /* noop in restricted WebViews */
+            }
             updateFromEvent(e);
         });
 
@@ -248,6 +295,7 @@ export function openColorPickerPopover({
     function onDocKeyDown(e) {
         if (e.key === "Escape") {
             e.preventDefault();
+            e.stopPropagation();
             closeColorPickerPopover();
         }
     }
@@ -258,17 +306,25 @@ export function openColorPickerPopover({
 
     document.addEventListener("pointerdown", onDocPointerDown, true);
     document.addEventListener("keydown", onDocKeyDown, true);
+    document.addEventListener("scroll", onViewportChange, true);
     window.addEventListener("resize", onViewportChange);
+    window.visualViewport?.addEventListener("resize", onViewportChange);
+    window.visualViewport?.addEventListener("scroll", onViewportChange);
 
     syncVisuals();
     positionPopover();
 
     activeAnchor = anchor;
     activeCloseFn = () => {
+        if (closed) return;
+        closed = true;
         flushCommit();
         document.removeEventListener("pointerdown", onDocPointerDown, true);
         document.removeEventListener("keydown", onDocKeyDown, true);
+        document.removeEventListener("scroll", onViewportChange, true);
         window.removeEventListener("resize", onViewportChange);
+        window.visualViewport?.removeEventListener("resize", onViewportChange);
+        window.visualViewport?.removeEventListener("scroll", onViewportChange);
         popover.remove();
         onClose?.();
     };

@@ -2,9 +2,9 @@ import "./Vibrant.min.js";
 import "./color-thief.umd.js";
 
 /** @type {any} */
-const Vibrant = window["Vibrant"];
+const Vibrant = window["Vibrant"] || globalThis["Vibrant"];
 /** @type {any} */
-const ColorThief = window["ColorThief"];
+const ColorThief = window["ColorThief"] || globalThis["ColorThief"];
 
 const MAX_SWATCH_CACHE = 80;
 /** @type {Map<string, Record<string, any>>} */
@@ -14,6 +14,18 @@ const pendingSwatches = new Map();
 
 /** @type {CSSStyleDeclaration | null} */
 let colorProbeStyle = null;
+/** @type {CanvasRenderingContext2D | null} */
+let colorResolveCtx = null;
+
+const REJECTED_COLOR_KEYWORDS = new Set([
+    "transparent",
+    "inherit",
+    "initial",
+    "unset",
+    "revert",
+    "revert-layer",
+    "currentcolor",
+]);
 
 /**
  * Waits for an HTMLImageElement to finish loading.
@@ -33,7 +45,11 @@ export function waitForImage(img) {
 
         const onLoad = () => {
             cleanup();
-            resolve(img);
+            if (img.naturalWidth > 0) {
+                resolve(img);
+            } else {
+                reject(new Error("Image decoded with zero width."));
+            }
         };
         const onError = () => {
             cleanup();
@@ -237,8 +253,93 @@ export function rgbaToCssString(r, g, b, a = 255) {
 }
 
 /**
+ * Parses an `rgb(...)`, `rgba(...)`, or `color(srgb ...)` CSS string into RGBA bytes.
+ * @param {string} cssStr
+ * @returns {{ r: number, g: number, b: number, a: number } | null}
+ */
+function parseComputedColorString(cssStr) {
+    const rgbMatch = cssStr.match(
+        /^rgba?\(\s*([\d.]+%?)(?:[\s,]+)([\d.]+%?)(?:[\s,]+)([\d.]+%?)(?:\s*[,/]\s*([\d.%]+))?\s*\)$/i
+    );
+    if (rgbMatch) {
+        const parseChannel = (token) => {
+            if (token.endsWith("%")) {
+                return (parseFloat(token) / 100) * 255;
+            }
+            return parseFloat(token);
+        };
+        const rawAlpha = rgbMatch[4];
+        let alpha = 255;
+        if (rawAlpha !== undefined) {
+            alpha = rawAlpha.endsWith("%")
+                ? (parseFloat(rawAlpha) / 100) * 255
+                : parseFloat(rawAlpha) * 255;
+        }
+        return {
+            r: Math.max(0, Math.min(255, Math.round(parseChannel(rgbMatch[1])))),
+            g: Math.max(0, Math.min(255, Math.round(parseChannel(rgbMatch[2])))),
+            b: Math.max(0, Math.min(255, Math.round(parseChannel(rgbMatch[3])))),
+            a: Math.max(0, Math.min(255, Math.round(alpha))),
+        };
+    }
+
+    const srgbMatch = cssStr.match(
+        /^color\(\s*srgb\s+([-+]?[\d.]+%?)\s+([-+]?[\d.]+%?)\s+([-+]?[\d.]+%?)(?:\s*\/\s*([\d.%]+))?\s*\)$/i
+    );
+    if (srgbMatch) {
+        const parseUnit = (token) =>
+            token.endsWith("%") ? parseFloat(token) / 100 : parseFloat(token);
+        const rawAlpha = srgbMatch[4];
+        let alpha = 255;
+        if (rawAlpha !== undefined) {
+            alpha = rawAlpha.endsWith("%")
+                ? (parseFloat(rawAlpha) / 100) * 255
+                : parseFloat(rawAlpha) * 255;
+        }
+        return {
+            r: Math.max(0, Math.min(255, Math.round(parseUnit(srgbMatch[1]) * 255))),
+            g: Math.max(0, Math.min(255, Math.round(parseUnit(srgbMatch[2]) * 255))),
+            b: Math.max(0, Math.min(255, Math.round(parseUnit(srgbMatch[3]) * 255))),
+            a: Math.max(0, Math.min(255, Math.round(alpha))),
+        };
+    }
+
+    return null;
+}
+
+/**
+ * Fallback CSS Color 4 resolver using a 1x1 offscreen canvas.
+ * @param {string} cssColor
+ * @returns {{ r: number, g: number, b: number, a: number } | null}
+ */
+function resolveColorViaCanvas(cssColor) {
+    try {
+        if (!colorResolveCtx) {
+            const c = document.createElement("canvas");
+            c.width = 1;
+            c.height = 1;
+            colorResolveCtx = c.getContext("2d", { willReadFrequently: true });
+        }
+        if (!colorResolveCtx) return null;
+        colorResolveCtx.clearRect(0, 0, 1, 1);
+        colorResolveCtx.fillStyle = "#000000";
+        colorResolveCtx.fillStyle = cssColor;
+        colorResolveCtx.fillRect(0, 0, 1, 1);
+        const data = colorResolveCtx.getImageData(0, 0, 1, 1).data;
+        return {
+            r: data[0],
+            g: data[1],
+            b: data[2],
+            a: data[3],
+        };
+    } catch (_) {
+        return null;
+    }
+}
+
+/**
  * Parses any valid CSS color string into `{ r, g, b, a }` (all 0-255).
- * Rejects empty strings and `transparent`.
+ * Rejects empty strings, `transparent`, and CSS-wide keywords.
  *
  * @param {any} input
  * @returns {{ r: number, g: number, b: number, a: number } | null}
@@ -246,7 +347,7 @@ export function rgbaToCssString(r, g, b, a = 255) {
 export function parseCssColor(input) {
     if (typeof input !== "string") return null;
     const value = input.trim();
-    if (!value || value.toLowerCase() === "transparent") return null;
+    if (!value || REJECTED_COLOR_KEYWORDS.has(value.toLowerCase())) return null;
 
     if (!colorProbeStyle) {
         colorProbeStyle = document.createElement("span").style;
@@ -256,35 +357,29 @@ export function parseCssColor(input) {
     colorProbeStyle.color = value;
     if (!colorProbeStyle.color) return null;
 
-    let normalized = colorProbeStyle.color;
+    let normalized = colorProbeStyle.color.trim();
+    if (REJECTED_COLOR_KEYWORDS.has(normalized.toLowerCase())) return null;
 
-    if (/^(color|oklch|oklab|lab|lch|hwb)\(/i.test(normalized)) {
+    const direct = parseComputedColorString(normalized);
+    if (direct) return direct;
+
+    // Resolve CSS Color 4 / relative / color-mix expressions via attached element first
+    const root = document.body || document.documentElement;
+    if (root) {
         const probeEl = document.createElement("span");
-        probeEl.style.cssText = `color:${value};position:absolute;visibility:hidden;pointer-events:none;`;
-        (document.body || document.documentElement).appendChild(probeEl);
+        probeEl.style.position = "absolute";
+        probeEl.style.visibility = "hidden";
+        probeEl.style.pointerEvents = "none";
+        probeEl.style.color = value;
+        root.appendChild(probeEl);
         normalized = getComputedStyle(probeEl).color || normalized;
         probeEl.remove();
+
+        const computed = parseComputedColorString(normalized);
+        if (computed) return computed;
     }
 
-    const match = normalized.match(
-        /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)(?:\s*[,/]\s*([\d.%]+))?\s*\)$/i
-    );
-    if (!match) return null;
-
-    const [, rStr, gStr, bStr, rawAlpha] = match;
-    let alpha = 255;
-    if (rawAlpha !== undefined) {
-        alpha = rawAlpha.endsWith("%")
-            ? (parseFloat(rawAlpha) / 100) * 255
-            : parseFloat(rawAlpha) * 255;
-    }
-
-    return {
-        r: Math.max(0, Math.min(255, Math.round(parseFloat(rStr)))),
-        g: Math.max(0, Math.min(255, Math.round(parseFloat(gStr)))),
-        b: Math.max(0, Math.min(255, Math.round(parseFloat(bStr)))),
-        a: Math.max(0, Math.min(255, Math.round(alpha))),
-    };
+    return resolveColorViaCanvas(normalized);
 }
 
 /**
@@ -325,7 +420,7 @@ function classifyColor(r, g, b) {
  */
 function createDownscaledCanvas(image, maxDimension = 192) {
     const canvas = document.createElement("canvas");
-    const ctx = canvas.getContext("2d");
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
     let width = image.naturalWidth || image.width;
     let height = image.naturalHeight || image.height;
@@ -358,13 +453,14 @@ function createDownscaledCanvas(image, maxDimension = 192) {
  * Extracts ColorThief swatches as a fallback when Vibrant misses buckets.
  * @param {HTMLCanvasElement} canvas
  * @param {number} [paletteSize=12]
- * @returns {Record<string, { getRgb: () => number[], getHex: () => string }>}
+ * @returns {Record<string, { getRgb: () => number[], getHex: () => string, getPopulation?: () => number }>}
  */
 function getColorThiefSwatches(canvas, paletteSize = 12) {
+    if (!ColorThief) return {};
     const colorThief = new ColorThief();
     const palette = colorThief.getPalette(canvas, paletteSize);
     if (!Array.isArray(palette) || palette.length === 0) {
-        throw new Error("Color Thief failed to extract palette.");
+        return {};
     }
 
     const classified = {};
@@ -374,6 +470,7 @@ function getColorThiefSwatches(canvas, paletteSize = 12) {
             classified[category] = {
                 getRgb: () => color,
                 getHex: () => rgbToHex(color[0], color[1], color[2]),
+                getPopulation: () => 1,
             };
         }
     }
@@ -381,7 +478,40 @@ function getColorThiefSwatches(canvas, paletteSize = 12) {
 }
 
 /**
- * Extracts Vibrant + ColorThief swatches from an image, with LRU caching.
+ * Computes a direct non-transparent pixel average when quantizers return no swatches
+ * (e.g. near-pure-white or 1x1 monochrome images).
+ * @param {HTMLCanvasElement} canvas
+ * @returns {Record<string, any>}
+ */
+function getDirectPixelSwatch(canvas) {
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return {};
+    const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    let count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] < 16) continue;
+        r += data[i];
+        g += data[i + 1];
+        b += data[i + 2];
+        count++;
+    }
+    if (count === 0) return {};
+    const avg = [Math.round(r / count), Math.round(g / count), Math.round(b / count)];
+    const bucket = classifyColor(avg[0], avg[1], avg[2]) || "Muted";
+    return {
+        [bucket]: {
+            getRgb: () => avg,
+            getHex: () => rgbToHex(avg[0], avg[1], avg[2]),
+            getPopulation: () => count,
+        },
+    };
+}
+
+/**
+ * Extracts Vibrant + ColorThief swatches from an image, with bounded LRU caching.
  * @param {HTMLImageElement} image
  * @returns {Promise<Record<string, any>>}
  */
@@ -390,7 +520,10 @@ async function getSwatchesFromImage(image) {
     const cacheKey = image.currentSrc || image.src;
 
     if (swatchCache.has(cacheKey)) {
-        return /** @type {Record<string, any>} */ (swatchCache.get(cacheKey));
+        const hit = /** @type {Record<string, any>} */ (swatchCache.get(cacheKey));
+        swatchCache.delete(cacheKey);
+        swatchCache.set(cacheKey, hit);
+        return hit;
     }
     if (pendingSwatches.has(cacheKey)) {
         return /** @type {Promise<Record<string, any>>} */ (pendingSwatches.get(cacheKey));
@@ -399,8 +532,17 @@ async function getSwatchesFromImage(image) {
     const task = (async () => {
         try {
             const canvas = createDownscaledCanvas(image);
-            const vibrant = new Vibrant(canvas, 64, 12);
-            let swatches = vibrant.swatches();
+            /** @type {Record<string, any>} */
+            let swatches = {};
+
+            if (Vibrant) {
+                try {
+                    const vibrant = new Vibrant(canvas, 64, 12);
+                    swatches = vibrant.swatches() || {};
+                } catch (err) {
+                    console.debug("[ST Dialogue Colorizer Mini] Vibrant extraction skipped:", err);
+                }
+            }
 
             const required = [
                 "Vibrant", "DarkVibrant", "LightVibrant",
@@ -419,6 +561,14 @@ async function getSwatchesFromImage(image) {
                     swatches = merged;
                 } catch (err) {
                     console.debug("[ST Dialogue Colorizer Mini] ColorThief fallback failed:", err);
+                }
+            }
+
+            if (Object.values(swatches).every((v) => !v)) {
+                try {
+                    swatches = getDirectPixelSwatch(canvas);
+                } catch (err) {
+                    console.debug("[ST Dialogue Colorizer Mini] Direct pixel fallback failed:", err);
                 }
             }
 

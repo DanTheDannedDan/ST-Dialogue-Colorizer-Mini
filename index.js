@@ -10,13 +10,20 @@ import {
     invalidateSwatchCache,
     makeBetterContrast,
     normalizeCssColor,
+    parseCssColor,
     rgbToHex,
 } from "./color-utils.js";
 import {
     closeColorPickerPopover,
+    isColorPickerOpen,
     openColorPickerPopover,
 } from "./color-picker.js";
-import { pickColor, isNativeEyeDropperSupported } from "./eyedropper.js";
+import {
+    closeActiveEyedropper,
+    isEyedropperActive,
+    isNativeEyeDropperSupported,
+    pickColor,
+} from "./eyedropper.js";
 import {
     CharacterType,
     getAllPersonas,
@@ -65,18 +72,47 @@ function getOverridesMap(charType) {
 }
 
 /**
- * Detects whether the active SillyTavern theme has a light background.
- * Cached and updated only when body theme attributes change.
+ * Detects whether the active SillyTavern / TauriTavern theme has a light surface.
+ * Checks opaque surface backgrounds first (`#sheld`, `#chat`, `body`), and falls
+ * back to inverted text luminance on translucent/glass themes.
  */
 function detectLightTheme() {
-    const match = window.getComputedStyle(document.body).backgroundColor.match(/\d+/g);
-    if (!match || match.length < 3) return false;
-    const luminance =
-        (0.299 * parseInt(match[0], 10) +
-            0.587 * parseInt(match[1], 10) +
-            0.114 * parseInt(match[2], 10)) /
-        255;
-    return luminance > 0.5;
+    const candidates = [
+        document.getElementById("sheld"),
+        document.getElementById("chat"),
+        document.body,
+        document.documentElement,
+    ];
+
+    for (const el of candidates) {
+        if (!el) continue;
+        const bg = parseCssColor(window.getComputedStyle(el).backgroundColor);
+        if (bg && bg.a >= 100) {
+            const lum = (0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b) / 255;
+            return lum > 0.5;
+        }
+    }
+
+    const rootStyle = window.getComputedStyle(document.documentElement);
+    for (const prop of ["--SmartThemeChatTintColor", "--SmartThemeBlurTintColor"]) {
+        const val = rootStyle.getPropertyValue(prop);
+        const parsed = parseCssColor(val);
+        if (parsed && parsed.a >= 100) {
+            const lum = (0.299 * parsed.r + 0.587 * parsed.g + 0.114 * parsed.b) / 255;
+            return lum > 0.5;
+        }
+    }
+
+    const textTarget = document.getElementById("chat") || document.body;
+    if (textTarget) {
+        const fg = parseCssColor(window.getComputedStyle(textTarget).color);
+        if (fg && fg.a >= 100) {
+            const lum = (0.299 * fg.r + 0.587 * fg.g + 0.114 * fg.b) / 255;
+            return lum < 0.45;
+        }
+    }
+
+    return false;
 }
 
 let cachedIsLightTheme = false;
@@ -125,14 +161,27 @@ function setSmartCache(key, value) {
  * @returns {string}
  */
 function cssEscapeAttr(value) {
-    return String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+    return String(value)
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\r/g, "\\d ")
+        .replace(/\n/g, "\\a ");
 }
 
 function initStyleSheet() {
     document.getElementById("sdc-colors-style")?.remove();
+    activeRules.clear();
     colorStyleElement = document.createElement("style");
     colorStyleElement.id = "sdc-colors-style";
     document.head.appendChild(colorStyleElement);
+
+    const sheet = colorStyleElement.sheet;
+    if (sheet) {
+        sheet.insertRule(
+            `#chat .mes[data-sdc-uid] .mes_text q, #chat .mes[data-sdc-uid] .ch_name .name_text, #chat .mes[data-sdc-uid] .name_text, .mes[data-sdc-uid] .mes_text q, .mes[data-sdc-uid] .ch_name .name_text, .mes[data-sdc-uid] .name_text { color: var(--sdc-color); }`,
+            sheet.cssRules.length
+        );
+    }
 }
 
 /**
@@ -143,8 +192,17 @@ function initStyleSheet() {
  * @param {string} cssColor
  */
 function applyCssColor(uid, cssColor) {
+    if (!cssColor) return;
+    if (!colorStyleElement || !colorStyleElement.isConnected || !colorStyleElement.sheet) {
+        const snapshot = Array.from(activeRules.entries(), ([k, v]) => [k, v.color]);
+        initStyleSheet();
+        for (const [k, c] of snapshot) {
+            if (k !== uid) applyCssColor(k, c);
+        }
+    }
+
     const sheet = colorStyleElement?.sheet;
-    if (!sheet || !cssColor) return;
+    if (!sheet) return;
 
     const existing = activeRules.get(uid);
     if (existing) {
@@ -161,12 +219,6 @@ function applyCssColor(uid, cssColor) {
         sheet.cssRules.length
     );
     const varRule = /** @type {CSSStyleRule} */ (sheet.cssRules[varIdx]);
-
-    sheet.insertRule(
-        `.mes[data-sdc-uid="${esc}"] .mes_text q, .mes[data-sdc-uid="${esc}"] .ch_name .name_text, .mes[data-sdc-uid="${esc}"] .name_text { color: var(--sdc-color); }`,
-        sheet.cssRules.length
-    );
-
     activeRules.set(uid, { varRule, color: cssColor });
 }
 
@@ -175,15 +227,35 @@ function applyCssColor(uid, cssColor) {
  * @param {string} type
  * @param {string} avatarName
  * @param {string | null} [fallbackImgSrc]
+ * @param {boolean} [cacheBust=false]
  * @returns {Promise<HTMLImageElement | null>}
  */
-async function loadAvatarImage(type, avatarName, fallbackImgSrc = null) {
-    const candidates = getAvatarCandidateUrls(type, avatarName, fallbackImgSrc);
+async function loadAvatarImage(type, avatarName, fallbackImgSrc = null, cacheBust = false) {
+    const candidates = getAvatarCandidateUrls(type, avatarName, fallbackImgSrc, cacheBust);
     for (const url of candidates) {
         const loaded = await new Promise((resolve) => {
             const img = new Image();
-            img.onload = () => resolve(img.naturalWidth > 0 ? img : null);
-            img.onerror = () => resolve(null);
+            let settled = false;
+            const timer = window.setTimeout(() => {
+                if (settled) return;
+                settled = true;
+                img.onload = null;
+                img.onerror = null;
+                resolve(null);
+            }, 10000);
+
+            img.onload = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(img.naturalWidth > 0 ? img : null);
+            };
+            img.onerror = () => {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                resolve(null);
+            };
             img.src = url;
         });
         if (loaded) return /** @type {HTMLImageElement} */ (loaded);
@@ -194,24 +266,31 @@ async function loadAvatarImage(type, avatarName, fallbackImgSrc = null) {
 /**
  * Resolves the Avatar Smart color for an author (ignoring manual override), using cache.
  * @param {{ type: string, avatarName: string, uid: string, fallbackImgSrc?: string | null }} author
+ * @param {boolean} [cacheBust=false]
  * @returns {Promise<string>}
  */
-async function resolveSmartColor(author) {
+async function resolveSmartColor(author, cacheBust = false) {
     const isLight = cachedIsLightTheme;
     const cacheKey = `${author.uid}|${isLight ? "L" : "D"}`;
 
-    const cached = smartColorCache.get(cacheKey);
-    if (cached) return cached;
+    if (!cacheBust) {
+        const cached = smartColorCache.get(cacheKey);
+        if (cached) {
+            setSmartCache(cacheKey, cached);
+            return cached;
+        }
 
-    const inflight = pendingColorTasks.get(cacheKey);
-    if (inflight) return inflight;
+        const inflight = pendingColorTasks.get(cacheKey);
+        if (inflight) return inflight;
+    }
 
     const task = (async () => {
         try {
             const img = await loadAvatarImage(
                 author.type,
                 author.avatarName,
-                author.fallbackImgSrc ?? null
+                author.fallbackImgSrc ?? null,
+                cacheBust
             );
             if (!img) return DEFAULT_FALLBACK_COLOR;
 
@@ -239,8 +318,9 @@ async function resolveSmartColor(author) {
  * for a single author. Guards against mid-flight override edits.
  *
  * @param {{ type: string, avatarName: string, uid: string, fallbackImgSrc?: string | null }} author
+ * @param {{ cacheBust?: boolean }} [options]
  */
-async function ensureAuthorColor(author) {
+async function ensureAuthorColor(author, options = {}) {
     const overrides = getOverridesMap(author.type);
     const rawOverride = overrides[author.avatarName];
     const validOverride = rawOverride ? normalizeCssColor(rawOverride) : null;
@@ -250,7 +330,7 @@ async function ensureAuthorColor(author) {
         return validOverride;
     }
 
-    const smartHex = await resolveSmartColor(author);
+    const smartHex = await resolveSmartColor(author, Boolean(options.cacheBust));
 
     // Re-check in case a manual override was set while the image was decoding.
     const latestRaw = overrides[author.avatarName];
@@ -269,6 +349,8 @@ async function ensureAuthorColor(author) {
 function clearSmartCacheForAuthor(uid, avatarName) {
     smartColorCache.delete(`${uid}|L`);
     smartColorCache.delete(`${uid}|D`);
+    pendingColorTasks.delete(`${uid}|L`);
+    pendingColorTasks.delete(`${uid}|D`);
     invalidateSwatchCache(avatarName);
 }
 
@@ -293,23 +375,30 @@ function tagMessage(messageEl) {
     // Fast path during streaming: return in O(1) if nothing about author identity changed.
     if (/** @type {any} */ (messageEl)._sdcSig === sig) {
         const uid = messageEl.getAttribute("data-sdc-uid");
-        if (uid && !activeRules.has(uid)) {
-            const author = resolveMessageAuthor(messageEl);
-            if (author) ensureAuthorColor(author);
+        if (uid) {
+            if (!activeRules.has(uid)) {
+                const author = resolveMessageAuthor(messageEl);
+                if (author) ensureAuthorColor(author);
+            }
+            return;
         }
-        return;
+        if (/** @type {any} */ (messageEl)._sdcIsUncolored) {
+            return;
+        }
     }
 
     /** @type {any} */ (messageEl)._sdcSig = sig;
 
     const author = resolveMessageAuthor(messageEl);
     if (!author) {
+        /** @type {any} */ (messageEl)._sdcIsUncolored = true;
         if (messageEl.hasAttribute("data-sdc-uid")) {
             messageEl.removeAttribute("data-sdc-uid");
         }
         return;
     }
 
+    /** @type {any} */ (messageEl)._sdcIsUncolored = false;
     if (messageEl.getAttribute("data-sdc-uid") !== author.uid) {
         messageEl.setAttribute("data-sdc-uid", author.uid);
     }
@@ -402,7 +491,7 @@ async function refreshAllStyledAuthors() {
  * Text Input + Custom Picker Swatch + Eyedropper + Reset to Auto.
  *
  * @param {string} id
- * @param {() => ({ type: string, avatarName: string, uid: string } | null)} getAuthor
+ * @param {() => ({ type: string, avatarName: string, uid: string, fallbackImgSrc?: string | null } | null)} getAuthor
  */
 function createColorOverrideControl(id, getAuthor) {
     const wrapper = document.createElement("div");
@@ -430,7 +519,7 @@ function createColorOverrideControl(id, getAuthor) {
     textInput.type = "text";
     textInput.className = "text_pole sdc-color-input";
     textInput.placeholder = "Auto (#RRGGBB / rgb())";
-    textInput.title = "Any CSS color: #RRGGBB, #RGBA, rgb(), rgba(), hsl(), hsla(), or named colors.";
+    textInput.title = "Any CSS color: #RRGGBB, #RGBA, rgb(), rgba(), hsl(), hsla(), oklch(), or named colors.";
 
     const swatchBtn = document.createElement("button");
     swatchBtn.type = "button";
@@ -443,7 +532,7 @@ function createColorOverrideControl(id, getAuthor) {
     eyedropperBtn.innerHTML = '<i class="fa-solid fa-eye-dropper"></i>';
     eyedropperBtn.title = isNativeEyeDropperSupported()
         ? "Pick a color from the screen or avatar"
-        : "Pick a color by clicking on an avatar";
+        : "Pick a color from an avatar or anywhere on screen";
 
     const resetBtn = document.createElement("button");
     resetBtn.type = "button";
@@ -504,44 +593,54 @@ function createColorOverrideControl(id, getAuthor) {
 
     /**
      * Live-updates CSS rule & UI without committing to settings yet (for fast picker dragging).
+     * @param {{ type: string, avatarName: string, uid: string }} targetAuthor
      * @param {string} cssColor
+     * @param {boolean} [updateTextInput=true]
      */
-    function previewOverride(cssColor) {
-        const author = getAuthor();
-        if (!author) return;
-        textInput.value = cssColor;
+    function previewOverrideFor(targetAuthor, cssColor, updateTextInput = true) {
+        if (!targetAuthor) return;
+        applyCssColor(targetAuthor.uid, cssColor);
+
+        // Only update control visuals if this control still points to `targetAuthor`.
+        if (getAuthor()?.uid !== targetAuthor.uid) return;
+        if (updateTextInput) {
+            textInput.value = cssColor;
+        }
         textInput.classList.remove("sdc-input-invalid");
         swatchBtn.style.backgroundColor = cssColor;
         swatchBtn.classList.add("is-override");
         resetBtn.style.display = "flex";
-        applyCssColor(author.uid, cssColor);
     }
 
     /**
      * Persists a manual override or clears it back to Avatar Smart auto-detect.
+     * @param {{ type: string, avatarName: string, uid: string }} targetAuthor
      * @param {string | null} rawColor
      */
-    async function commitOverride(rawColor) {
-        const author = getAuthor();
-        if (!author) return;
+    async function commitOverrideFor(targetAuthor, rawColor) {
+        if (!targetAuthor) return;
 
-        const overrides = getOverridesMap(author.type);
+        const overrides = getOverridesMap(targetAuthor.type);
         const normalized = rawColor ? normalizeCssColor(rawColor) : null;
 
         if (normalized) {
-            overrides[author.avatarName] = normalized;
-            applyCssColor(author.uid, normalized);
+            overrides[targetAuthor.avatarName] = normalized;
+            applyCssColor(targetAuthor.uid, normalized);
         } else {
-            delete overrides[author.avatarName];
-            await ensureAuthorColor(author);
+            delete overrides[targetAuthor.avatarName];
+            await ensureAuthorColor(targetAuthor);
         }
 
         saveSettingsDebounced();
-        syncUI();
+        if (getAuthor()?.uid === targetAuthor.uid) {
+            syncUI();
+        }
     }
 
     // Text field interactions
     textInput.addEventListener("input", () => {
+        const author = getAuthor();
+        if (!author) return;
         const raw = textInput.value.trim();
         if (!raw) {
             textInput.classList.remove("sdc-input-invalid");
@@ -550,7 +649,8 @@ function createColorOverrideControl(id, getAuthor) {
         const normalized = normalizeCssColor(raw);
         textInput.classList.toggle("sdc-input-invalid", !normalized);
         if (normalized) {
-            previewOverride(normalized);
+            // Do NOT overwrite `textInput.value` while user is actively typing.
+            previewOverrideFor(author, normalized, false);
         }
     });
 
@@ -562,14 +662,16 @@ function createColorOverrideControl(id, getAuthor) {
     });
 
     textInput.addEventListener("focusout", () => {
+        const author = getAuthor();
+        if (!author) return;
         const raw = textInput.value.trim();
         if (!raw) {
-            commitOverride(null);
+            commitOverrideFor(author, null);
             return;
         }
         const normalized = normalizeCssColor(raw);
         if (normalized) {
-            commitOverride(normalized);
+            commitOverrideFor(author, normalized);
         } else {
             syncUI();
         }
@@ -577,31 +679,41 @@ function createColorOverrideControl(id, getAuthor) {
 
     // Custom in-WebView color picker button
     swatchBtn.addEventListener("click", async () => {
-        const author = getAuthor();
-        if (!author) return;
+        closeActiveEyedropper();
+        const targetAuthor = getAuthor();
+        if (!targetAuthor) return;
 
-        const overrides = getOverridesMap(author.type);
-        const saved = overrides[author.avatarName];
+        const overrides = getOverridesMap(targetAuthor.type);
+        const saved = overrides[targetAuthor.avatarName];
         const initial =
             (saved && normalizeCssColor(saved)) ||
-            (await resolveSmartColor(author));
+            (await resolveSmartColor(targetAuthor));
+
+        // Guard in case author changed or button detached while async smart color resolved
+        if (!swatchBtn.isConnected || getAuthor()?.uid !== targetAuthor.uid) return;
 
         openColorPickerPopover({
             anchor: swatchBtn,
             initialColor: initial,
-            onInput: (color) => previewOverride(color),
-            onCommit: (color) => commitOverride(color),
+            onInput: (color) => previewOverrideFor(targetAuthor, color, true),
+            onCommit: (color) => commitOverrideFor(targetAuthor, color),
         });
     });
 
     // Eyedropper
     eyedropperBtn.addEventListener("click", async () => {
         closeColorPickerPopover();
+        const targetAuthor = getAuthor();
+        if (!targetAuthor) return;
+
         eyedropperBtn.classList.add("sdc-eyedropper-btn-active");
         try {
-            const hex = await pickColor();
+            const hex = await pickColor({
+                author: targetAuthor,
+                triggerElement: eyedropperBtn,
+            });
             if (hex) {
-                await commitOverride(hex);
+                await commitOverrideFor(targetAuthor, hex);
             }
         } finally {
             eyedropperBtn.classList.remove("sdc-eyedropper-btn-active");
@@ -611,7 +723,10 @@ function createColorOverrideControl(id, getAuthor) {
     // Reset back to auto-detect
     resetBtn.addEventListener("click", () => {
         closeColorPickerPopover();
-        commitOverride(null);
+        closeActiveEyedropper();
+        const author = getAuthor();
+        if (!author) return;
+        commitOverrideFor(author, null);
     });
 
     /** @type {any} */ (wrapper).__sdcSyncUI = syncUI;
@@ -631,51 +746,11 @@ function syncOverrideControl(elementId) {
     }
 }
 
-function tryInjectCharacterOverride() {
-    if (document.getElementById("sdc-char_color_override")) return true;
-    const form = document.getElementById("form_create");
-    if (!form) return false;
-    const anchor = form.querySelector("#avatar-and-name-block");
-    if (!anchor) return false;
-
-    const control = createColorOverrideControl("sdc-char_color_override", getCharacterBeingEdited);
-    anchor.insertAdjacentElement("afterend", control);
-    return true;
-}
-
-function tryInjectPersonaOverride() {
-    if (document.getElementById("sdc-persona_color_override")) return true;
-
-    const personaDesc = document.getElementById("persona_description");
-    if (personaDesc?.parentElement) {
-        const control = createColorOverrideControl("sdc-persona_color_override", getCurrentPersona);
-        personaDesc.parentElement.insertAdjacentElement("afterbegin", control);
-        return true;
-    }
-
-    const labels = Array.from(document.querySelectorAll("label"));
-    const currentPersonaLabel = labels.find((l) =>
-        (l.textContent ?? "").trim().toLowerCase().includes("current persona")
-    );
-    const row = currentPersonaLabel?.closest("div") ?? currentPersonaLabel?.parentElement;
-    if (!row) return false;
-
-    const control = createColorOverrideControl("sdc-persona_color_override", getCurrentPersona);
-    row.insertAdjacentElement("beforebegin", control);
-    return true;
-}
-
-function tryInjectAllOverrideUIs() {
-    const charOk = tryInjectCharacterOverride();
-    const personaOk = tryInjectPersonaOverride();
-    return charOk && personaOk;
-}
-
 // =========================================================================
 // Lifecycle, Observers & Initialization
 // =========================================================================
 
-jQuery(async ($) => {
+jQuery(async () => {
     // Hot-reload cleanup
     if (window.__sdcDispose && typeof window.__sdcDispose === "function") {
         try {
@@ -703,18 +778,255 @@ jQuery(async ($) => {
     const activeTimers = [];
     /** @type {MutationObserver[]} */
     const activeObservers = [];
+    let charEditorObserverAttached = false;
+    let personaObserverAttached = false;
 
     onDispose(() => {
         closeColorPickerPopover();
+        closeActiveEyedropper();
         for (const t of activeTimers) clearTimeout(t);
         activeTimers.length = 0;
         for (const obs of activeObservers) obs.disconnect();
         activeObservers.length = 0;
     });
 
+    // Cooperate with TauriTavern Android / mobile hardware back navigation
+    const win = /** @type {any} */ (window);
+    const prevBackHandler = win.__TAURITAVERN_HANDLE_BACK__;
+    win.__TAURITAVERN_HANDLE_BACK__ = () => {
+        if (isEyedropperActive()) {
+            closeActiveEyedropper();
+            return true;
+        }
+        if (isColorPickerOpen()) {
+            closeColorPickerPopover();
+            return true;
+        }
+        if (typeof prevBackHandler === "function") {
+            return prevBackHandler();
+        }
+        return false;
+    };
+    onDispose(() => {
+        if (prevBackHandler !== undefined) {
+            win.__TAURITAVERN_HANDLE_BACK__ = prevBackHandler;
+        } else {
+            delete win.__TAURITAVERN_HANDLE_BACK__;
+        }
+    });
+
+    initStyleSheet();
+    onDispose(() => {
+        colorStyleElement?.remove();
+        colorStyleElement = null;
+        activeRules.clear();
+    });
+
+    function ensureCharEditorObserver() {
+        if (charEditorObserverAttached) return;
+        const preview = document.getElementById("avatar_load_preview");
+        const pole = document.getElementById("avatar_url_pole");
+        const form = document.getElementById("form_create");
+        if (!preview && !pole && !form) return;
+        charEditorObserverAttached = true;
+
+        const onCharEditorChange = () => {
+            closeColorPickerPopover();
+            syncOverrideControl("sdc-char_color_override");
+        };
+
+        if (preview) {
+            const previewObs = new MutationObserver(onCharEditorChange);
+            previewObs.observe(preview, { attributes: true, attributeFilter: ["src"] });
+            activeObservers.push(previewObs);
+        }
+        if (pole) {
+            const poleObs = new MutationObserver(onCharEditorChange);
+            poleObs.observe(pole, { attributes: true, attributeFilter: ["value"] });
+            activeObservers.push(poleObs);
+
+            pole.addEventListener("change", onCharEditorChange);
+            onDispose(() => pole.removeEventListener("change", onCharEditorChange));
+        }
+        if (form) {
+            const formObs = new MutationObserver(() => {
+                syncOverrideControl("sdc-char_color_override");
+            });
+            formObs.observe(form, { attributes: true, attributeFilter: ["style", "class"] });
+            activeObservers.push(formObs);
+        }
+    }
+
+    function ensurePersonaObserver() {
+        if (personaObserverAttached) return;
+        const panel =
+            document.getElementById("PersonaManagement") ||
+            document.getElementById("user_avatar_block");
+        if (!panel) return;
+        personaObserverAttached = true;
+
+        let syncScheduled = false;
+        const schedulePersonaSync = () => {
+            if (syncScheduled) return;
+            syncScheduled = true;
+            requestAnimationFrame(() => {
+                syncScheduled = false;
+                tryInjectPersonaOverride();
+                syncOverrideControl("sdc-persona_color_override");
+                refreshActiveAuthors();
+            });
+        };
+
+        const personaObs = new MutationObserver((mutations) => {
+            for (const m of mutations) {
+                if (
+                    m.type === "attributes" &&
+                    m.target instanceof HTMLElement &&
+                    m.target.classList.contains("selected")
+                ) {
+                    schedulePersonaSync();
+                    return;
+                }
+                if (m.type === "childList" && (m.addedNodes.length || m.removedNodes.length)) {
+                    schedulePersonaSync();
+                    return;
+                }
+            }
+        });
+        personaObs.observe(panel, {
+            subtree: true,
+            childList: true,
+            attributes: true,
+            attributeFilter: ["class"],
+        });
+        activeObservers.push(personaObs);
+    }
+
+    function tryInjectCharacterOverride() {
+        ensureCharEditorObserver();
+        if (document.getElementById("sdc-char_color_override")) return true;
+        const form = document.getElementById("form_create");
+        if (!form) return false;
+        const anchor = form.querySelector("#avatar-and-name-block");
+        if (!anchor) return false;
+
+        const control = createColorOverrideControl(
+            "sdc-char_color_override",
+            getCharacterBeingEdited
+        );
+        anchor.insertAdjacentElement("afterend", control);
+        return true;
+    }
+
+    function tryInjectPersonaOverride() {
+        ensurePersonaObserver();
+        if (document.getElementById("sdc-persona_color_override")) return true;
+
+        const personaDesc = document.getElementById("persona_description");
+        if (personaDesc?.parentElement) {
+            const control = createColorOverrideControl(
+                "sdc-persona_color_override",
+                getCurrentPersona
+            );
+            personaDesc.parentElement.insertAdjacentElement("afterbegin", control);
+            return true;
+        }
+
+        const labels = Array.from(document.querySelectorAll("label"));
+        const currentPersonaLabel = labels.find((l) =>
+            (l.textContent ?? "").trim().toLowerCase().includes("current persona")
+        );
+        const row = currentPersonaLabel?.closest("div") ?? currentPersonaLabel?.parentElement;
+        if (!row) return false;
+
+        const control = createColorOverrideControl(
+            "sdc-persona_color_override",
+            getCurrentPersona
+        );
+        row.insertAdjacentElement("beforebegin", control);
+        return true;
+    }
+
+    function tryInjectAllOverrideUIs() {
+        const charOk = tryInjectCharacterOverride();
+        const personaOk = tryInjectPersonaOverride();
+        return charOk && personaOk;
+    }
+
+    function checkThemeChange() {
+        const isLight = detectLightTheme();
+        if (isLight !== cachedIsLightTheme) {
+            cachedIsLightTheme = isLight;
+            refreshAllStyledAuthors();
+            syncOverrideControl("sdc-char_color_override");
+            syncOverrideControl("sdc-persona_color_override");
+        }
+    }
+
+    // Register SillyTavern events IMMEDIATELY before awaiting host readiness
+    // so deferred TauriTavern loads never miss early CHAT_CHANGED / APP_READY events.
+    safeEventOn(event_types.CHAT_CHANGED, () => {
+        closeColorPickerPopover();
+        closeActiveEyedropper();
+        refreshActiveAuthors();
+        tagVisibleMessages();
+        syncOverrideControl("sdc-char_color_override");
+    });
+
+    safeEventOn(event_types.APP_READY, () => {
+        tryInjectAllOverrideUIs();
+        checkThemeChange();
+        refreshActiveAuthors();
+        tagVisibleMessages();
+        syncOverrideControl("sdc-char_color_override");
+        syncOverrideControl("sdc-persona_color_override");
+    });
+
+    safeEventOn(event_types.EXTENSIONS_FIRST_LOAD, () => {
+        tryInjectAllOverrideUIs();
+        refreshActiveAuthors();
+        tagVisibleMessages();
+    });
+
+    safeEventOn(event_types.GENERATION_STARTED, () => tagMessageById(undefined));
+    safeEventOn(event_types.STREAM_TOKEN_RECEIVED, () => tagMessageById(undefined));
+    safeEventOn(event_types.GENERATION_ENDED, () => tagMessageById(undefined));
+    safeEventOn(event_types.GENERATION_STOPPED, () => tagMessageById(undefined));
+
+    safeEventOn(event_types.USER_MESSAGE_RENDERED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.CHARACTER_MESSAGE_RENDERED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MESSAGE_RECEIVED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MESSAGE_SENT, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MESSAGE_UPDATED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MESSAGE_EDITED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MESSAGE_SWIPED, (mesId) => tagMessageById(mesId));
+    safeEventOn(event_types.MORE_MESSAGES_LOADED, () => tagVisibleMessages());
+    safeEventOn(event_types.GROUP_UPDATED, () => refreshActiveAuthors());
+    safeEventOn(event_types.SETTINGS_UPDATED, () => checkThemeChange());
+    safeEventOn(event_types.CHARACTER_PAGE_LOADED, () => {
+        tryInjectCharacterOverride();
+        syncOverrideControl("sdc-char_color_override");
+    });
+
+    safeEventOn(event_types.PERSONA_CHANGED, () => {
+        closeColorPickerPopover();
+        closeActiveEyedropper();
+        refreshActiveAuthors();
+        tagVisibleMessages();
+        syncOverrideControl("sdc-persona_color_override");
+    });
+
+    safeEventOn(event_types.CHARACTER_EDITED, () => {
+        const edited = getCharacterBeingEdited();
+        if (edited) {
+            clearSmartCacheForAuthor(edited.uid, edited.avatarName);
+            ensureAuthorColor(edited, { cacheBust: true });
+        }
+        syncOverrideControl("sdc-char_color_override");
+    });
+
     // Wait briefly for TauriTavern host readiness if running inside TauriTavern.
-    const hostReady = /** @type {any} */ (window).__TAURITAVERN__?.ready
-        ?? /** @type {any} */ (window).__TAURITAVERN_MAIN_READY__;
+    const hostReady = win.__TAURITAVERN__?.ready ?? win.__TAURITAVERN_MAIN_READY__;
     if (hostReady && typeof hostReady.then === "function") {
         try {
             await Promise.race([
@@ -727,12 +1039,6 @@ jQuery(async ($) => {
     }
 
     cachedIsLightTheme = detectLightTheme();
-    initStyleSheet();
-    onDispose(() => {
-        colorStyleElement?.remove();
-        colorStyleElement = null;
-        activeRules.clear();
-    });
 
     // Attach to DOM elements that might appear slightly later during boot
     function attachWithRetry(finder, onFound, intervalMs = 200, maxAttempts = 150) {
@@ -751,14 +1057,23 @@ jQuery(async ($) => {
     }
 
     // 1. Observe #chat cleanly:
-    //    - Shallow childList observer catches newly appended/prepended/virtual-mounted `.mes`
-    //    - Attribute-only subtree observer catches virtualizer recycled nodes or swipe speaker changes
-    //      (NEVER observes characterData or childList inside .mes_text, so zero overhead during streaming)
+    //    - Subtree childList observer catches newly mounted `.mes` (including inside
+    //      TauriTavern virtualizer wrapper divs) while skipping mutations inside `.mes`
+    //      itself (zero overhead during token streaming).
+    //    - Attribute observer catches virtualizer recycled nodes, swipe speaker changes,
+    //      or late-loading avatar `src` attributes.
     attachWithRetry(
         () => document.getElementById("chat"),
         (chatEl) => {
             const childObserver = new MutationObserver((mutations) => {
                 for (const m of mutations) {
+                    if (
+                        m.target !== chatEl &&
+                        m.target instanceof HTMLElement &&
+                        m.target.closest(".mes")
+                    ) {
+                        continue;
+                    }
                     for (const node of m.addedNodes) {
                         if (!(node instanceof HTMLElement)) continue;
                         if (node.classList.contains("mes")) {
@@ -772,20 +1087,29 @@ jQuery(async ($) => {
                     }
                 }
             });
-            childObserver.observe(chatEl, { childList: true });
+            childObserver.observe(chatEl, { childList: true, subtree: true });
             activeObservers.push(childObserver);
 
             const attrObserver = new MutationObserver((mutations) => {
                 for (const m of mutations) {
-                    if (m.target instanceof HTMLElement && m.target.classList.contains("mes")) {
-                        tagMessage(m.target);
+                    const target = m.target;
+                    if (!(target instanceof HTMLElement)) continue;
+                    if (m.attributeName === "src") {
+                        if (target.matches(".mesAvatarWrapper img, .avatar img")) {
+                            const mesEl = target.closest(".mes");
+                            if (mesEl instanceof HTMLElement) {
+                                tagMessage(mesEl);
+                            }
+                        }
+                    } else if (target.classList.contains("mes")) {
+                        tagMessage(target);
                     }
                 }
             });
             attrObserver.observe(chatEl, {
                 subtree: true,
                 attributes: true,
-                attributeFilter: ["mesid", "ch_name", "is_user"],
+                attributeFilter: ["mesid", "ch_name", "is_user", "is_system", "src"],
             });
             activeObservers.push(attrObserver);
 
@@ -793,151 +1117,78 @@ jQuery(async ($) => {
         }
     );
 
-    // 2. Observe Character Card Editor selection (`#avatar_url_pole`)
+    // 2. Observe Character Card Editor & Persona Management
     attachWithRetry(
-        () => document.getElementById("avatar_url_pole"),
-        (pole) => {
-            const poleObs = new MutationObserver(() => {
-                closeColorPickerPopover();
-                syncOverrideControl("sdc-char_color_override");
-            });
-            poleObs.observe(pole, { attributes: true, attributeFilter: ["value"] });
-            activeObservers.push(poleObs);
-
-            const onPoleChange = () => syncOverrideControl("sdc-char_color_override");
-            pole.addEventListener("change", onPoleChange);
-            onDispose(() => pole.removeEventListener("change", onPoleChange));
-
+        () =>
+            document.getElementById("avatar_load_preview") ||
+            document.getElementById("avatar_url_pole"),
+        () => {
             tryInjectCharacterOverride();
             syncOverrideControl("sdc-char_color_override");
         }
     );
 
-    // 3. Observe Persona Management changes (`#user_avatar_block` / `#PersonaManagement`)
     attachWithRetry(
-        () => document.getElementById("PersonaManagement") || document.getElementById("user_avatar_block"),
-        (panel) => {
-            let syncScheduled = false;
-            const schedulePersonaSync = () => {
-                if (syncScheduled) return;
-                syncScheduled = true;
-                requestAnimationFrame(() => {
-                    syncScheduled = false;
-                    tryInjectPersonaOverride();
-                    syncOverrideControl("sdc-persona_color_override");
-                    refreshActiveAuthors();
-                });
-            };
-
-            const personaObs = new MutationObserver((mutations) => {
-                for (const m of mutations) {
-                    if (
-                        m.type === "attributes" &&
-                        m.target instanceof HTMLElement &&
-                        m.target.classList.contains("selected")
-                    ) {
-                        schedulePersonaSync();
-                        return;
-                    }
-                    if (m.type === "childList" && (m.addedNodes.length || m.removedNodes.length)) {
-                        schedulePersonaSync();
-                        return;
-                    }
-                }
-            });
-            personaObs.observe(panel, {
-                subtree: true,
-                childList: true,
-                attributes: true,
-                attributeFilter: ["class"],
-            });
-            activeObservers.push(personaObs);
-
+        () =>
+            document.getElementById("PersonaManagement") ||
+            document.getElementById("user_avatar_block"),
+        () => {
             tryInjectPersonaOverride();
             syncOverrideControl("sdc-persona_color_override");
         }
     );
 
-    // 4. Observe theme changes (light vs dark)
-    const themeObs = new MutationObserver(() => {
-        const isLight = detectLightTheme();
-        if (isLight !== cachedIsLightTheme) {
-            cachedIsLightTheme = isLight;
-            refreshAllStyledAuthors();
-            syncOverrideControl("sdc-char_color_override");
-            syncOverrideControl("sdc-persona_color_override");
-        }
-    });
+    // 3. Observe theme changes (light vs dark)
+    const themeObs = new MutationObserver(() => checkThemeChange());
     themeObs.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["class", "style"],
+    });
+    themeObs.observe(document.documentElement, {
         attributes: true,
         attributeFilter: ["class", "style"],
     });
     activeObservers.push(themeObs);
 
-    // 5. Lazy UI injection fallback for drawers/tabs opened minutes/hours later
-    const onDrawerInteraction = (e) => {
+    if (typeof win.__TAURITAVERN__?.api?.layout?.subscribe === "function") {
+        try {
+            const unsubLayout = win.__TAURITAVERN__.api.layout.subscribe(() => {
+                checkThemeChange();
+            });
+            if (typeof unsubLayout === "function") {
+                onDispose(unsubLayout);
+            }
+        } catch (_) {
+            /* noop */
+        }
+    }
+
+    // 4. Lazy UI injection & character switch fallback (covers jQuery `.val()` updates
+    //    and drawers opened minutes or hours after startup)
+    const onDrawerOrSelectionClick = (e) => {
         const target = /** @type {HTMLElement | null} */ (e.target);
         if (!target) return;
         if (
             target.closest(
-                ".drawer-toggle, .drawer-icon, #rightNavDrawerIcon, #persona-management-button, #rm_button_characters, .character_select"
+                ".drawer-toggle, .drawer-icon, #rightNavDrawerIcon, #persona-management-button, #rm_button_characters, #rm_button_selected_ch, .character_select, .group_member, [chid], #user_avatar_block .avatar"
             )
         ) {
-            setTimeout(() => {
+            requestAnimationFrame(() => {
                 tryInjectAllOverrideUIs();
                 syncOverrideControl("sdc-char_color_override");
                 syncOverrideControl("sdc-persona_color_override");
-            }, 80);
+            });
+            activeTimers.push(
+                window.setTimeout(() => {
+                    tryInjectAllOverrideUIs();
+                    syncOverrideControl("sdc-char_color_override");
+                    syncOverrideControl("sdc-persona_color_override");
+                }, 100)
+            );
         }
     };
-    document.addEventListener("click", onDrawerInteraction, true);
-    onDispose(() => document.removeEventListener("click", onDrawerInteraction, true));
-
-    // 6. SillyTavern events (covers streaming, non-streaming, swipes, edits, chat switches)
-    safeEventOn(event_types.CHAT_CHANGED, () => {
-        closeColorPickerPopover();
-        refreshActiveAuthors();
-        tagVisibleMessages();
-        syncOverrideControl("sdc-char_color_override");
-    });
-
-    safeEventOn(event_types.APP_READY, () => {
-        tryInjectAllOverrideUIs();
-        refreshActiveAuthors();
-        tagVisibleMessages();
-        syncOverrideControl("sdc-char_color_override");
-        syncOverrideControl("sdc-persona_color_override");
-    });
-
-    safeEventOn(event_types.GENERATION_STARTED, () => tagMessageById(undefined));
-    safeEventOn(event_types.STREAM_TOKEN_RECEIVED, () => tagMessageById(undefined));
-    safeEventOn(event_types.GENERATION_ENDED, () => tagMessageById(undefined));
-    safeEventOn(event_types.GENERATION_STOPPED, () => tagMessageById(undefined));
-
-    safeEventOn(event_types.USER_MESSAGE_RENDERED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.CHARACTER_MESSAGE_RENDERED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MESSAGE_RECEIVED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MESSAGE_SENT, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MESSAGE_UPDATED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MESSAGE_EDITED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MESSAGE_SWIPED, (mesId) => tagMessageById(mesId));
-    safeEventOn(event_types.MORE_MESSAGES_LOADED, () => tagVisibleMessages());
-    safeEventOn(event_types.GROUP_UPDATED, () => refreshActiveAuthors());
-
-    safeEventOn(event_types.PERSONA_CHANGED, () => {
-        closeColorPickerPopover();
-        refreshActiveAuthors();
-        syncOverrideControl("sdc-persona_color_override");
-    });
-
-    safeEventOn(event_types.CHARACTER_EDITED, () => {
-        const edited = getCharacterBeingEdited();
-        if (edited) {
-            clearSmartCacheForAuthor(edited.uid, edited.avatarName);
-            ensureAuthorColor(edited);
-        }
-        syncOverrideControl("sdc-char_color_override");
-    });
+    document.addEventListener("click", onDrawerOrSelectionClick, true);
+    onDispose(() => document.removeEventListener("click", onDrawerOrSelectionClick, true));
 
     // Immediate startup sync (crucial for TauriTavern deferred extension loading
     // when APP_READY / CHAT_CHANGED may have already fired before init)
